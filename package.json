@@ -1,0 +1,68 @@
+{
+  "name": "cross-platform-gamebot",
+  "version": "1.0.0",
+  "description": "A unified gaming bot that works across Telegram and Discord platforms",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "node dist/index.js",
+    "predev": "node scripts/ensure-services.js",
+    "dev": "tsx watch src/index.ts",
+    "dev:full": "npm run predev && npm run dev",
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "db:init": "tsx scripts/setup.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "get-telegram-id": "node scripts/get-telegram-id.js",
+    "get-discord-id": "node scripts/get-discord-id.js",
+    "get-invite": "node scripts/get-bot-invite.js"
+  },
+  "keywords": [
+    "telegram",
+    "discord",
+    "bot",
+    "games",
+    "multiplayer",
+    "cross-platform"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.21.0",
+    "node-telegram-bot-api": "^0.66.0",
+    "dotenv": "^17.2.1",
+    "ioredis": "^5.7.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.6",
+    "winston": "^3.17.0",
+    "winston-daily-rotate-file": "^5.0.0",
+    "axios": "^1.7.8",
+    "express": "^4.18.2",
+    "node-schedule": "^2.1.1",
+    "uuid": "^9.0.1",
+    "dayjs": "^1.11.10",
+    "lodash": "^4.17.21"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "@types/node-telegram-bot-api": "^0.64.9",
+    "@types/express": "^4.17.21",
+    "@types/node-schedule": "^2.1.6",
+    "@types/uuid": "^9.0.8",
+    "@types/lodash": "^4.14.202",
+    "@typescript-eslint/eslint-plugin": "^8.38.0",
+    "@typescript-eslint/parser": "^8.38.0",
+    "eslint": "^9.32.0",
+    "typescript": "^5.8.3",
+    "tsx": "^4.20.3",
+    "jest": "^29.7.0",
+    "@types/jest": "^29.5.12",
+    "ts-jest": "^29.1.2"
+  }
+}
