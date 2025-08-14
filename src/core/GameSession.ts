@@ -262,6 +262,18 @@ export class GameSession {
   getId(): string {
     return this.id;
   }
+  
+  isEnded(): boolean {
+    return this.endedAt !== undefined;
+  }
+  
+  getWinner(): string | undefined {
+    return this.winner;
+  }
+  
+  getIsDraw(): boolean {
+    return this.isDraw || false;
+  }
 
   getGameType(): string {
     return this.game.id;
@@ -305,18 +317,6 @@ export class GameSession {
 
   getLastActivity(): Date {
     return this.lastActivity;
-  }
-
-  isEnded(): boolean {
-    return !!this.endedAt;
-  }
-
-  getWinner(): string | undefined {
-    return this.winner;
-  }
-
-  getIsDraw(): boolean {
-    return !!this.isDraw;
   }
 
   setMessageId(platform: Platform, messageId: string): void {

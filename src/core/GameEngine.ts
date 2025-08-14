@@ -550,17 +550,72 @@ export class GameEngine extends EventEmitter {
     }
     
     try {
-      await session.handleInteraction(interaction);
-      await this.saveSession(session);
+      // Special handling for join_game - ensure player is added to session
+      if (interaction.data?.id === 'join_game') {
+        const players = session.getPlayers();
+        const isPlayerInGame = players.some(p => p.id === interaction.userId);
+        
+        if (!isPlayerInGame) {
+          // Get player from adapter and add to session
+          const adapter = this.platforms.get(interaction.platform);
+          if (adapter) {
+            const player = await adapter.getPlayer(interaction.userId);
+            if (player) {
+              await session.addPlayer(player);
+              logger.info(`Added player ${player.displayName} to game session ${sessionId}`);
+            }
+          }
+        }
+      }
       
-      // Update the game message with new state
-      if (interaction.messageId && interaction.platform) {
-        await this.updateGameUI(
-          session,
-          session.getChannelId(),
-          interaction.platform,
-          interaction.messageId
-        );
+      await session.handleInteraction(interaction);
+      
+      // Check if the game has ended
+      if (session.isEnded()) {
+        // Save the final state
+        await this.saveSession(session);
+        
+        // Update UI one last time with the final game state
+        if (interaction.messageId && interaction.platform) {
+          await this.updateGameUI(
+            session,
+            session.getChannelId(),
+            interaction.platform,
+            interaction.messageId
+          );
+        }
+        
+        // Get winner information for logging
+        const winner = session.getWinner();
+        const isDraw = session.getIsDraw();
+        let endMessage = `Game ${sessionId} ended - `;
+        
+        if (isDraw) {
+          endMessage += "It's a draw!";
+        } else if (winner) {
+          const winnerName = session.getPlayers().find(p => p.id === winner)?.displayName || winner;
+          endMessage += `Winner: ${winnerName}`;
+        } else {
+          endMessage += "No winner";
+        }
+        
+        logger.info(endMessage);
+        
+        // Properly end the game session
+        await this.endGameSession(sessionId, 'game_over');
+      } else {
+        // Normal save for ongoing game
+        await this.saveSession(session);
+        
+        // Update the game message with new state
+        if (interaction.messageId && interaction.platform) {
+          await this.updateGameUI(
+            session,
+            session.getChannelId(),
+            interaction.platform,
+            interaction.messageId
+          );
+        }
       }
     } catch (error) {
       logger.error('Error handling interaction:', error);

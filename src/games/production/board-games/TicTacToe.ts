@@ -14,6 +14,8 @@ interface TicTacToeState {
     X: string;
     O: string;
   };
+  winnerId?: string;
+  isDraw?: boolean;
 }
 
 export class TicTacToe extends BaseGame {
@@ -79,6 +81,7 @@ export class TicTacToe extends BaseGame {
 
     // Check for win
     if (this.checkWin(symbol)) {
+      this.gameState.winnerId = playerId;
       return {
         success: true,
         gameEnded: true,
@@ -89,6 +92,7 @@ export class TicTacToe extends BaseGame {
 
     // Check for draw
     if (this.checkDraw()) {
+      this.gameState.isDraw = true;
       return {
         success: true,
         gameEnded: true,
@@ -144,7 +148,18 @@ export class TicTacToe extends BaseGame {
     content += boardDisplay + '\n\n';
     
     if (this.isEnded) {
-      content += '**Game Over!**\n';
+      content += '**Game Over!** ';
+      
+      // Check who won
+      if (this.gameState.isDraw) {
+        content += "It's a draw!\n";
+      } else if (this.gameState.winnerId) {
+        const winnerSymbol = this.gameState.winnerId === this.gameState.players.X ? 'X' : 'O';
+        const winnerName = this.getSafePlayerName(this.gameState.winnerId);
+        content += `${winnerSymbol} ${winnerName} wins!\n`;
+      } else {
+        content += '\n';
+      }
     } else {
       content += `**Current Turn: ${this.getSafePlayerName(currentPlayerId)} (${this.gameState.currentPlayer})**\n`;
       if (isYourTurn) {

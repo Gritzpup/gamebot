@@ -26,6 +26,8 @@ interface Connect4State {
   isVsBot?: boolean;
   botDifficulty?: AIDifficulty;
   creatorId?: string;
+  winnerId?: string;
+  isDraw?: boolean;
 }
 
 export class Connect4 extends BaseGame {
@@ -176,6 +178,7 @@ export class Connect4 extends BaseGame {
       
       const cancellingPlayer = this.getSafePlayerName(playerId);
       this.gameState.gameState = Connect4GameState.GAME_OVER;
+      // Don't set a winner for cancelled games
       return {
         success: true,
         gameEnded: true,
@@ -251,6 +254,7 @@ export class Connect4 extends BaseGame {
     // Check for win
     if (this.checkWin(row, col, color)) {
       this.gameState.gameState = Connect4GameState.GAME_OVER;
+      this.gameState.winnerId = playerId;
       return {
         success: true,
         gameEnded: true,
@@ -262,6 +266,7 @@ export class Connect4 extends BaseGame {
     // Check for draw
     if (this.checkDraw()) {
       this.gameState.gameState = Connect4GameState.GAME_OVER;
+      this.gameState.isDraw = true;
       return {
         success: true,
         gameEnded: true,
@@ -376,7 +381,19 @@ export class Connect4 extends BaseGame {
     
     // Add turn info
     if (this.isEnded || this.gameState.gameState === Connect4GameState.GAME_OVER) {
-      content += '🏆 Game Over!\n';
+      content += '🏆 Game Over! ';
+      
+      // Check who won
+      if (this.gameState.isDraw) {
+        content += "It's a draw!\n";
+      } else if (this.gameState.winnerId) {
+        const winnerColor = this.gameState.winnerId === this.gameState.players.R ? '🔴' : '🟡';
+        const winnerName = this.getSafePlayerName(this.gameState.winnerId);
+        content += `${winnerColor} ${winnerName} wins!\n`;
+      } else {
+        // Game was cancelled or ended without a winner
+        content += '\n';
+      }
     } else {
       const currentColor = this.gameState.currentPlayer === 'R' ? '🔴' : '🟡';
       const currentName = this.isPlayerBot(currentPlayerId) ? '🤖 Bot' : this.getSafePlayerName(currentPlayerId);
