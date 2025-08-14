@@ -335,22 +335,22 @@ export class Connect4 extends BaseGame {
     // Ensure game state is initialized
     if (!this.gameState || !this.gameState.board) {
       return {
-        content: '**Connect 4**\n\nGame is initializing...',
+        content: '<b>Connect 4</b>\n\nGame is initializing...',
       };
     }
 
     // Handle waiting state
     if (this.gameState.gameState === Connect4GameState.WAITING_FOR_PLAYER) {
       const timeLeft = this.getWaitingTimeLeft();
-      let content = '```\n';
-      content += '╔═══════════════════════════╗\n';
-      content += '║      CONNECT 4 🔴 🟡      ║\n';
-      content += '║                           ║\n';
-      content += '║   Waiting for player...   ║\n';
-      content += `║       ⏱️  0:${timeLeft.toString().padStart(2, '0')} left        ║\n`;
-      content += '║                           ║\n';
-      content += '╚═══════════════════════════╝\n';
-      content += '```\n\n';
+      let content = '<pre>\n';
+      content += '      ╔═══════════════════════════╗\n';
+      content += '      ║      CONNECT 4 🔴 🟡      ║\n';
+      content += '      ║                           ║\n';
+      content += '      ║   Waiting for player...   ║\n';
+      content += `      ║       ⏱️  0:${timeLeft.toString().padStart(2, '0')} left        ║\n`;
+      content += '      ║                           ║\n';
+      content += '      ╚═══════════════════════════╝\n';
+      content += '</pre>\n\n';
       const creatorId = this.gameState.creatorId || this.gameState.players.R || '';
       const creatorName = creatorId ? this.getSafePlayerName(creatorId) : 'Unknown Player';
       content += `Created by: ${creatorName}\n\n`;
@@ -448,11 +448,11 @@ export class Connect4 extends BaseGame {
     content += '\n';
 
     // Create board display
-    let boardDisplay = '```\n';
+    let boardDisplay = '<pre>\n';
     
     // Board rows (no borders on sides)
     for (let row = 0; row < this.ROWS; row++) {
-      boardDisplay += '  ';  // Add 2 spaces prefix
+      boardDisplay += '      ';  // Add 6 spaces prefix
       for (let col = 0; col < this.COLS; col++) {
         const cell = board[row][col];
         let disc = '⚫';
@@ -466,10 +466,10 @@ export class Connect4 extends BaseGame {
       boardDisplay += '\n';
     }
     
-    boardDisplay += '  ╠═══════════════════════╣\n';
-    boardDisplay += '  ║  1  2  3  4  5  6  7  ║\n';
-    boardDisplay += '  ╚═══════════════════════╝\n';
-    boardDisplay += '```';
+    boardDisplay += '      ╠═══════════════════════╣\n';
+    boardDisplay += '      ║  1  2  3  4  5  6  7  ║\n';
+    boardDisplay += '      ╚═══════════════════════╝\n';
+    boardDisplay += '</pre>';
 
 
     // Add board to content
@@ -477,7 +477,7 @@ export class Connect4 extends BaseGame {
     
     // Last move indicator
     if (this.gameState.lastMove) {
-      content += `\n_Last move: Column ${this.gameState.lastMove.col + 1}_`;
+      content += `\n<i>Last move: Column ${this.gameState.lastMove.col + 1}</i>`;
     }
 
     return {
@@ -488,15 +488,15 @@ export class Connect4 extends BaseGame {
 
   renderHelp(): UIMessage {
     return {
-      content: `**How to Play Connect 4**\n\n` +
+      content: `<b>How to Play Connect 4</b>\n\n` +
         `• Players take turns dropping colored discs into a 7-column, 6-row grid\n` +
         `• Discs fall to the lowest available position in the column\n` +
         `• The first player to get 4 discs in a row wins!\n` +
         `• Rows can be horizontal, vertical, or diagonal\n` +
         `• If the grid fills up with no winner, it's a draw\n\n` +
-        `**Commands**\n` +
+        `<b>Commands</b>\n` +
         `• Click a column number (1-7) to drop your disc\n` +
-        `• Use \`/quit\` to leave the game`,
+        `• Use <code>/quit</code> to leave the game`,
     };
   }
 
@@ -505,11 +505,11 @@ export class Connect4 extends BaseGame {
     const scores = this.getScores();
 
     return {
-      content: `**Game Statistics**\n\n` +
-        `**Players**\n` +
+      content: `<b>Game Statistics</b>\n\n` +
+        `<b>Players</b>\n` +
         `🔴 ${this.getSafePlayerName(this.gameState.players.R)}: ${scores[this.gameState.players.R] || 0} points\n` +
         `🟡 ${this.getSafePlayerName(this.gameState.players.Y)}: ${scores[this.gameState.players.Y] || 0} points\n` +
-        `\n**Turns Played: ${this.turnCount}**`,
+        `\n<b>Turns Played: ${this.turnCount}</b>`,
     };
   }
 
@@ -733,10 +733,10 @@ export class Connect4 extends BaseGame {
       tempBoard[animRow][col] = color;
       
       // Generate frame
-      let frame = '```\n';
+      let frame = '<pre>\n';
       
       for (let row = 0; row < this.ROWS; row++) {
-        frame += '  ';  // Add 2 spaces prefix
+        frame += '      ';  // Add 6 spaces prefix
         for (let c = 0; c < this.COLS; c++) {
           const cell = tempBoard[row][c];
           let disc = '⚫';
@@ -748,17 +748,17 @@ export class Connect4 extends BaseGame {
         frame += '\n';
       }
       
-      frame += '  ╠═════════════╣\n';
-      frame += '  ║1 2 3 4 5 6 7║\n';
-      frame += '  ╚═════════════╝\n';
-      frame += '```';
+      frame += '      ╠═════════════╣\n';
+      frame += '      ║1 2 3 4 5 6 7║\n';
+      frame += '      ╚═════════════╝\n';
+      frame += '</pre>';
       
       frames.push(frame);
     }
     
     // Play animation frames
     for (const frame of frames) {
-      const animContent = frame + '\n\n⏳ **Dropping disc...**';
+      const animContent = frame + '\n\n⏳ <b>Dropping disc...</b>';
       
       // Update message with animation frame
       await (this.session as any).updateMessage(messageId, {

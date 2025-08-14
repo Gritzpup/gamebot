@@ -60,7 +60,7 @@ export class TelegramAdapter extends PlatformAdapter {
 
   async sendMessage(channelId: string, message: UIMessage): Promise<string> {
     const options: TelegramBot.SendMessageOptions = {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       disable_web_page_preview: true,
     };
     
@@ -124,7 +124,7 @@ export class TelegramAdapter extends PlatformAdapter {
     const options: TelegramBot.EditMessageTextOptions = {
       chat_id: channelId,
       message_id: parseInt(messageId),
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       disable_web_page_preview: true,
     };
     
@@ -329,55 +329,43 @@ export class TelegramAdapter extends PlatformAdapter {
   }
 
   protected formatUserMention(userId: string): string {
-    return `[User](tg://user?id=${userId})`;
+    return `<a href="tg://user?id=${userId}">User</a>`;
   }
 
 
   private formatContent(content: string): string {
     try {
-      // First, protect code blocks from processing
-      const codeBlocks: string[] = [];
-      content = content.replace(/```[\s\S]*?```/g, (match) => {
-        codeBlocks.push(match);
-        return `__CODEBLOCK_${codeBlocks.length - 1}__`;
-      });
+      // Escape HTML entities
+      content = content
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
       
-      // Protect inline code from processing
-      const inlineCodes: string[] = [];
-      content = content.replace(/`[^`\n]+`/g, (match) => {
-        inlineCodes.push(match);
-        return `__INLINECODE_${inlineCodes.length - 1}__`;
-      });
+      // Convert markdown to HTML
+      // Bold: **text** -> <b>text</b>
+      content = content.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
       
-      // Escape special characters that can break Telegram's parser
-      content = content.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
+      // Italic: *text* or _text_ -> <i>text</i>
+      content = content.replace(/\*(.*?)\*/g, '<i>$1</i>');
+      content = content.replace(/_(.*?)_/g, '<i>$1</i>');
       
-      // Convert markdown formatting (after escaping)
-      // Bold: **text** -> *text*
-      content = content.replace(/\\\*\\\*(.*?)\\\*\\\*/g, '*$1*');
-      // Italic: __text__ -> _text_  
-      content = content.replace(/\\_\\_(.*?)\\_\\_/g, '_$1_');
-      // Remove escaping from converted formatting
-      content = content.replace(/\*([^*]+)\*/g, (match, p1) => {
-        return '*' + p1.replace(/\\/g, '') + '*';
-      });
-      content = content.replace(/_([^_]+)_/g, (match, p1) => {
-        return '_' + p1.replace(/\\/g, '') + '_';
-      });
+      // Code blocks: ```text``` -> <pre>text</pre>
+      content = content.replace(/```([\s\S]*?)```/g, '<pre>$1</pre>');
       
-      // Restore code blocks and inline code (these should not be escaped)
-      codeBlocks.forEach((block, i) => {
-        content = content.replace(`__CODEBLOCK_${i}__`, block);
-      });
-      inlineCodes.forEach((code, i) => {
-        content = content.replace(`__INLINECODE_${i}__`, code);
-      });
+      // Inline code: `text` -> <code>text</code>
+      content = content.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+      
+      // Links: [text](url) -> <a href="url">text</a>
+      content = content.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
       
       return content;
     } catch (error) {
       logger.error('Error formatting content for Telegram:', error);
-      // Return original content if formatting fails
-      return content;
+      // Return escaped content if formatting fails
+      return content
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
     }
   }
 }
