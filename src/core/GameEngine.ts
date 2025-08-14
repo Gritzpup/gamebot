@@ -26,6 +26,7 @@ import {
 } from '../types';
 import { IPlatformAdapter, CommandContext } from '../types/platform.types';
 import { performanceConfig } from '../config';
+import { interactionRateLimiter } from '../utils/RateLimiter';
 
 export class GameEngine extends EventEmitter {
   private static instance: GameEngine;
@@ -40,6 +41,14 @@ export class GameEngine extends EventEmitter {
   private relayService: CrossPlatformRelayService;
   private isRunning: boolean = false;
   private cleanupInterval?: NodeJS.Timeout;
+  private updateQueue: Map<string, {
+    session: GameSession;
+    channelId: string;
+    platform: Platform;
+    messageId?: string;
+    timestamp: number;
+  }> = new Map();
+  private updateProcessor?: NodeJS.Timeout;
 
   private constructor() {
     super();
@@ -84,6 +93,11 @@ export class GameEngine extends EventEmitter {
       this.cleanupInactiveSessions();
     }, 60000); // Every minute
     
+    // Start update processor for debouncing UI updates
+    this.updateProcessor = setInterval(() => {
+      this.processUpdateQueue();
+    }, 100); // Process every 100ms
+    
     logger.info('GameEngine started');
   }
 
@@ -98,6 +112,11 @@ export class GameEngine extends EventEmitter {
     // Stop cleanup interval
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
+    }
+    
+    // Stop update processor
+    if (this.updateProcessor) {
+      clearInterval(this.updateProcessor);
     }
     
     // Save all active sessions
@@ -219,11 +238,43 @@ export class GameEngine extends EventEmitter {
     sourcePlatform: Platform,
     specificMessageId?: string
   ): Promise<void> {
+    // Queue the update for debouncing
+    const updateKey = `${session.getId()}-${sourcePlatform}-${sourceChannelId}`;
+    this.updateQueue.set(updateKey, {
+      session,
+      channelId: sourceChannelId,
+      platform: sourcePlatform,
+      messageId: specificMessageId,
+      timestamp: Date.now()
+    });
+  }
+
+  private async processUpdateQueue(): Promise<void> {
+    const now = Date.now();
+    const DEBOUNCE_DELAY = 200; // 200ms debounce
+
+    for (const [key, update] of this.updateQueue.entries()) {
+      if (now - update.timestamp >= DEBOUNCE_DELAY) {
+        this.updateQueue.delete(key);
+        this.performUIUpdate(update).catch(error => {
+          logger.error('Error processing queued UI update:', error);
+        });
+      }
+    }
+  }
+
+  private async performUIUpdate(update: {
+    session: GameSession;
+    channelId: string;
+    platform: Platform;
+    messageId?: string;
+  }): Promise<void> {
+    const { session, channelId, platform, messageId } = update;
     const sessionId = session.getId();
-    const adapter = this.platforms.get(sourcePlatform);
+    const adapter = this.platforms.get(platform);
     
     if (!adapter) {
-      logger.error(`Platform adapter not found for ${sourcePlatform}`);
+      logger.error(`Platform adapter not found for ${platform}`);
       return;
     }
     
@@ -233,9 +284,9 @@ export class GameEngine extends EventEmitter {
       const newState = await session.renderGameState(humanPlayerId);
       
       // Update on source platform
-      if (specificMessageId) {
+      if (messageId) {
         // Edit existing message
-        await adapter.editMessage(sourceChannelId, specificMessageId, newState);
+        await adapter.editMessage(channelId, messageId, newState);
       }
     } catch (error) {
       logger.error('Error updating game UI:', error);
@@ -248,8 +299,8 @@ export class GameEngine extends EventEmitter {
       const gameState = await session.renderGameState(humanPlayerId);
       
       await this.relayService.relayGameMessage(
-        sourcePlatform,
-        sourceChannelId,
+        platform,
+        channelId,
         gameState,
         sessionId,
         {
@@ -528,6 +579,12 @@ export class GameEngine extends EventEmitter {
   }
 
   private async handleInteraction(interaction: any): Promise<void> {
+    // Rate limit check - prevent button spam
+    const rateLimitKey = `${interaction.userId}-${interaction.messageId || 'global'}`;
+    if (!interactionRateLimiter.isAllowed(rateLimitKey)) {
+      logger.debug(`Rate limited interaction from ${interaction.userId}`);
+      return;
+    }
     
     // Extract session ID from interaction data
     let sessionId = interaction.data?.sessionId || 

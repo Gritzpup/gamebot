@@ -15,11 +15,17 @@ import {
 import { platformConfig } from '../../config';
 import { logger, logPlatformEvent } from '../../utils/logger';
 import { buildInlineKeyboard, parseCallbackData } from './keyboards';
+import { messageEditRateLimiter } from '../../utils/RateLimiter';
 
 export class TelegramAdapter extends PlatformAdapter {
   platform = Platform.Telegram;
   private bot: TelegramBot;
   private groupId: string;
+  private editQueue: Map<string, {
+    message: UIMessage;
+    retries: number;
+    nextRetryAt: number;
+  }> = new Map();
 
   constructor() {
     super();
@@ -29,6 +35,31 @@ export class TelegramAdapter extends PlatformAdapter {
     this.groupId = platformConfig.telegram.groupId;
     
     this.setupEventHandlers();
+    this.startMessageProcessor();
+  }
+
+  private startMessageProcessor(): void {
+    setInterval(async () => {
+      await this.processEditQueue();
+    }, 100);
+  }
+
+  private async processEditQueue(): Promise<void> {
+    const now = Date.now();
+    
+    for (const [key, item] of this.editQueue.entries()) {
+      if (now >= item.nextRetryAt) {
+        const [channelId, messageId] = key.split(':');
+        const rateLimitKey = `edit-${channelId}-${messageId}`;
+        
+        if (messageEditRateLimiter.isAllowed(rateLimitKey)) {
+          this.editQueue.delete(key);
+          this.editMessage(channelId, messageId, item.message).catch(err => {
+            logger.error('Failed to process queued edit:', err);
+          });
+        }
+      }
+    }
   }
 
   async connect(): Promise<void> {
@@ -121,6 +152,20 @@ export class TelegramAdapter extends PlatformAdapter {
   }
 
   async editMessage(channelId: string, messageId: string, message: UIMessage): Promise<void> {
+    // Check rate limit first
+    const rateLimitKey = `edit-${channelId}-${messageId}`;
+    if (!messageEditRateLimiter.isAllowed(rateLimitKey)) {
+      // Queue the message for later
+      const queueKey = `${channelId}:${messageId}`;
+      this.editQueue.set(queueKey, {
+        message,
+        retries: 0,
+        nextRetryAt: Date.now() + 500
+      });
+      logger.debug('Message edit rate limited, queued for later');
+      return;
+    }
+
     const options: TelegramBot.EditMessageTextOptions = {
       chat_id: channelId,
       message_id: parseInt(messageId),
@@ -153,6 +198,25 @@ export class TelegramAdapter extends PlatformAdapter {
         logger.debug('Message content unchanged, skipping edit');
         return;
       }
+      
+      // Handle rate limit errors (429)
+      if (error.response && error.response.statusCode === 429) {
+        const retryAfter = error.response.body?.parameters?.retry_after || 1;
+        logger.warn(`Telegram API rate limit hit, retry after ${retryAfter}s`);
+        
+        // Queue with exponential backoff
+        const queueKey = `${channelId}:${messageId}`;
+        const existing = this.editQueue.get(queueKey);
+        const retries = (existing?.retries || 0) + 1;
+        
+        this.editQueue.set(queueKey, {
+          message,
+          retries,
+          nextRetryAt: Date.now() + (retryAfter * 1000 * Math.pow(2, Math.min(retries - 1, 5)))
+        });
+        return;
+      }
+      
       logger.error('Error editing Telegram message:', error);
       
       // If it's a parsing error, try editing without formatting
