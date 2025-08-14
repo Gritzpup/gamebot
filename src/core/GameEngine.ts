@@ -4,6 +4,13 @@ import { logger, logGameEvent } from '../utils/logger';
 import { Database } from '../services/database/Database';
 import { RedisClient } from '../services/redis/RedisClient';
 import { GameSession } from './GameSession';
+import { GameRegistry } from './GameRegistry';
+import { CrossPlatformRelayService } from '../relay/CrossPlatformRelayService';
+import { 
+  LinkChannelsCommand, 
+  UnlinkChannelsCommand, 
+  ListLinksCommand 
+} from '../commands/admin/LinkChannelsCommand';
 import { 
   IGame, 
   GameRegistryEntry, 
@@ -20,22 +27,17 @@ import {
 import { IPlatformAdapter, CommandContext } from '../types/platform.types';
 import { performanceConfig } from '../config';
 
-// Import game implementations
-import { TicTacToe } from '../games/board-games/TicTacToe';
-import { Connect4 } from '../games/board-games/Connect4';
-import { Othello } from '../games/board-games/Othello';
-import { Wordle } from '../games/word-games/Wordle';
-// TODO: Import more games as they're implemented
-
 export class GameEngine extends EventEmitter {
   private static instance: GameEngine;
   private platforms: Map<Platform, IPlatformAdapter> = new Map();
   private activeSessions: Map<string, GameSession> = new Map();
-  private gameRegistry: Map<string, GameRegistryEntry> = new Map();
   private playerGames: Map<string, Set<string>> = new Map();
   private messageToSession: Map<string, string> = new Map(); // messageId -> sessionId
+  private channelToSession: Map<string, Set<string>> = new Map(); // channelId -> sessionIds
   private database: Database;
   private redis: RedisClient;
+  private gameRegistry: GameRegistry;
+  private relayService: CrossPlatformRelayService;
   private isRunning: boolean = false;
   private cleanupInterval?: NodeJS.Timeout;
 
@@ -43,6 +45,8 @@ export class GameEngine extends EventEmitter {
     super();
     this.database = Database.getInstance();
     this.redis = RedisClient.getInstance();
+    this.gameRegistry = GameRegistry.getInstance();
+    this.relayService = CrossPlatformRelayService.getInstance(this.database);
   }
 
   static getInstance(): GameEngine {
@@ -55,42 +59,13 @@ export class GameEngine extends EventEmitter {
   async initialize(): Promise<void> {
     logger.info('Initializing GameEngine...');
     
-    // Register built-in games
-    this.registerGame({
-      id: 'tictactoe',
-      name: 'Tic Tac Toe',
-      constructor: TicTacToe,
-      aliases: ['ttt', 'xo'],
-      enabled: true,
-    });
+    // Load games based on environment
+    await this.gameRegistry.loadGames();
     
-    this.registerGame({
-      id: 'wordle',
-      name: 'Wordle',
-      constructor: Wordle,
-      aliases: ['word'],
-      enabled: true,
-    });
+    // Initialize relay service
+    await this.relayService.initialize();
     
-    this.registerGame({
-      id: 'connect4',
-      name: 'Connect 4',
-      constructor: Connect4,
-      aliases: ['c4', 'four'],
-      enabled: true,
-    });
-    
-    this.registerGame({
-      id: 'othello',
-      name: 'Othello',
-      constructor: Othello,
-      aliases: ['reversi'],
-      enabled: true,
-    });
-    
-    // TODO: Register more games
-    
-    logger.info(`Registered ${this.gameRegistry.size} games`);
+    logger.info(`Loaded ${this.gameRegistry.getAvailableGames().length} games`);
     
     // Load active sessions from database
     await this.loadActiveSessions();
@@ -136,6 +111,9 @@ export class GameEngine extends EventEmitter {
     
     this.platforms.set(adapter.platform, adapter);
     
+    // Register adapter with relay service
+    this.relayService.registerAdapter(adapter.platform, adapter);
+    
     // Register command handlers
     this.setupPlatformCommands(adapter);
     
@@ -145,25 +123,16 @@ export class GameEngine extends EventEmitter {
     });
   }
 
-  registerGame(entry: GameRegistryEntry): void {
-    this.gameRegistry.set(entry.id, entry);
-    
-    // Also register aliases
-    for (const alias of entry.aliases) {
-      this.gameRegistry.set(alias, entry);
-    }
-    
-    logger.info(`Registered game: ${entry.name} (${entry.id})`);
-  }
-
   async createGameSession(
     gameType: string,
     platform: Platform,
     channelId: string,
     creatorId: string
   ): Promise<GameSession | null> {
-    const gameEntry = this.gameRegistry.get(gameType.toLowerCase());
-    if (!gameEntry || !gameEntry.enabled) {
+    const gameInfo = this.gameRegistry.getGame(gameType.toLowerCase());
+    const GameClass = this.gameRegistry.getGameClass(gameType.toLowerCase());
+    
+    if (!gameInfo || !GameClass) {
       return null;
     }
     
@@ -179,7 +148,7 @@ export class GameEngine extends EventEmitter {
     }
     
     // Create game instance
-    const game = new gameEntry.constructor();
+    const game = new GameClass();
     
     // Create session
     const sessionId = uuidv4();
@@ -205,29 +174,11 @@ export class GameEngine extends EventEmitter {
     // Store session
     this.activeSessions.set(sessionId, session);
     this.addPlayerGame(creatorId, sessionId);
+    this.addChannelSession(channelId, sessionId);
     
-    // Set up bot move callback to update UI
+    // Set up bot move callback to update UI across platforms
     (session as any).onBotMove = async () => {
-      // Find message ID for this session
-      let messageId: string | undefined;
-      for (const [msgId, sessId] of this.messageToSession.entries()) {
-        if (sessId === sessionId) {
-          messageId = msgId;
-          break;
-        }
-      }
-      
-      if (messageId) {
-        try {
-          // Get the human player (first player, creator)
-          const players = session.getPlayers();
-          const humanPlayerId = players.length > 0 ? players[0].id : undefined;
-          const newState = await session.renderGameState(humanPlayerId);
-          await adapter.editMessage(channelId, messageId, newState);
-        } catch (error) {
-          logger.error('Error updating message after bot move:', error);
-        }
-      }
+      await this.updateGameUI(session, channelId, platform);
     };
     
     // Save to database
@@ -235,18 +186,60 @@ export class GameEngine extends EventEmitter {
     
     // Emit event
     this.emitGameEvent(sessionId, GameEventType.GameStarted, {
-      gameType: gameEntry.id,
+      gameType: gameInfo.id,
       creatorId,
     });
     
-    logger.info(`Created game session: ${sessionId} (${gameEntry.name})`);
+    logger.info(`Created game session: ${sessionId} (${gameInfo.name})`);
     
     // For Connect4, set up auto-bot timer
-    if (gameEntry.id === 'connect4') {
+    if (gameInfo.id === 'connect4') {
       this.setupAutoBot(sessionId, session);
     }
     
     return session;
+  }
+
+  private async updateGameUI(
+    session: GameSession,
+    sourceChannelId: string,
+    sourcePlatform: Platform,
+    specificMessageId?: string
+  ): Promise<void> {
+    const sessionId = session.getId();
+    
+    // Update on source platform
+    if (specificMessageId) {
+      const adapter = this.platforms.get(sourcePlatform);
+      if (adapter) {
+        try {
+          const players = session.getPlayers();
+          const humanPlayerId = players.find(p => !p.id.startsWith('bot_'))?.id;
+          const newState = await session.renderGameState(humanPlayerId);
+          await adapter.editMessage(sourceChannelId, specificMessageId, newState);
+        } catch (error) {
+          logger.error('Error updating source platform message:', error);
+        }
+      }
+    }
+    
+    // Relay to other platforms if enabled
+    if (this.relayService.isRelayEnabled()) {
+      const players = session.getPlayers();
+      const humanPlayerId = players.find(p => !p.id.startsWith('bot_'))?.id;
+      const gameState = await session.renderGameState(humanPlayerId);
+      
+      await this.relayService.relayGameMessage(
+        sourcePlatform,
+        sourceChannelId,
+        gameState,
+        sessionId,
+        {
+          userId: humanPlayerId,
+          username: session.getGameName()
+        }
+      );
+    }
   }
 
   async joinGameSession(
@@ -332,6 +325,10 @@ export class GameEngine extends EventEmitter {
       this.removePlayerGame(player.id, sessionId);
     }
     
+    // Remove from channel sessions
+    const channelId = session.getChannelId();
+    this.removeChannelSession(channelId, sessionId);
+    
     // Update database
     await this.database.endGameSession(sessionId);
     
@@ -348,15 +345,12 @@ export class GameEngine extends EventEmitter {
   private setupPlatformCommands(adapter: IPlatformAdapter): void {
     // Game list command
     adapter.onCommand('games', async (ctx) => {
-      const games = this.getAvailableGames();
-      const categories = this.groupGamesByCategory(games);
+      const games = this.gameRegistry.getAvailableGames();
       
       const message: UIMessage = {
         content: '🎮 **Available Games**\n\n' +
-          Object.entries(categories).map(([category, games]) => 
-            `**${this.formatCategoryName(category)}**\n` +
-            games.map(g => `• ${g.name} - \`/${g.id}\``).join('\n')
-          ).join('\n\n'),
+          games.map(g => `• ${g.name} - \`/play ${g.id}\``).join('\n') +
+          '\n\n_Environment: ' + (process.env.NODE_ENV || 'production') + '_',
       };
       
       await ctx.reply(message);
@@ -386,7 +380,7 @@ export class GameEngine extends EventEmitter {
     adapter.onCommand('play', async (ctx) => {
       if (ctx.args.length === 0) {
         await ctx.reply({
-          content: 'Please specify a game. Example: `/play tictactoe`',
+          content: 'Please specify a game. Example: `/play connect4`',
         });
         return;
       }
@@ -415,6 +409,20 @@ export class GameEngine extends EventEmitter {
         // Track message to session mapping
         if (messageId) {
           this.messageToSession.set(messageId, session.getId());
+        }
+        
+        // Relay to linked channels if enabled
+        if (this.relayService.isRelayEnabled()) {
+          await this.relayService.relayGameMessage(
+            ctx.platform,
+            ctx.channelId,
+            gameMessage,
+            session.getId(),
+            {
+              userId: ctx.userId,
+              username: session.getGameName()
+            }
+          );
         }
         
       } catch (error: any) {
@@ -468,12 +476,31 @@ export class GameEngine extends EventEmitter {
           '**During a Game**\n' +
           '• Click buttons or use game-specific commands\n' +
           '• `/help <game>` - Get help for a specific game\n\n' +
+          '**Cross-Platform Gaming**\n' +
+          '• Games can be played across Discord and Telegram!\n' +
+          '• Join from either platform\n\n' +
           '**Examples**\n' +
-          '• `/play tictactoe` - Start Tic Tac Toe\n' +
-          '• `/play wordle` - Start Wordle\n',
+          '• `/play connect4` - Start Connect 4\n' +
+          '• `/play tictactoe` - Start Tic Tac Toe\n',
       };
       
       await ctx.reply(helpMessage);
+    });
+    
+    // Admin commands
+    const linkCommand = new LinkChannelsCommand();
+    adapter.onCommand('link', async (ctx) => {
+      await linkCommand.execute(ctx);
+    });
+    
+    const unlinkCommand = new UnlinkChannelsCommand();
+    adapter.onCommand('unlink', async (ctx) => {
+      await unlinkCommand.execute(ctx);
+    });
+    
+    const listLinksCommand = new ListLinksCommand();
+    adapter.onCommand('links', async (ctx) => {
+      await listLinksCommand.execute(ctx);
     });
   }
 
@@ -504,19 +531,12 @@ export class GameEngine extends EventEmitter {
       
       // Update the game message with new state
       if (interaction.messageId && interaction.platform) {
-        const adapter = this.platforms.get(interaction.platform);
-        if (adapter) {
-          const channelId = session.getChannelId();
-          const newState = await session.renderGameState(interaction.userId);
-          
-          try {
-            await adapter.editMessage(channelId, interaction.messageId, newState);
-            // Update message mapping if edit was successful
-            this.messageToSession.set(interaction.messageId, sessionId);
-          } catch (error) {
-            logger.error('Error updating message:', error);
-          }
-        }
+        await this.updateGameUI(
+          session,
+          session.getChannelId(),
+          interaction.platform,
+          interaction.messageId
+        );
       }
     } catch (error) {
       logger.error('Error handling interaction:', error);
@@ -528,14 +548,14 @@ export class GameEngine extends EventEmitter {
     
     for (const dbSession of sessions) {
       try {
-        // Recreate game instance
-        const gameEntry = this.gameRegistry.get(dbSession.game_type);
-        if (!gameEntry) {
+        // Get game class from registry
+        const GameClass = this.gameRegistry.getGameClass(dbSession.game_type);
+        if (!GameClass) {
           logger.warn(`Game type not found: ${dbSession.game_type}`);
           continue;
         }
         
-        const game = new gameEntry.constructor();
+        const game = new GameClass();
         game.deserialize(dbSession.state);
         
         // Recreate session
@@ -548,37 +568,16 @@ export class GameEngine extends EventEmitter {
         
         // Load players
         const players = await this.database.getGamePlayers(dbSession.id);
-        if (players.length > 0) {
-          for (const dbPlayer of players) {
-            const player = await this.database.getPlayer(dbPlayer.player_id);
-            if (player) {
-              await session.addPlayer(player as any);
-            }
-          }
-        } else {
-          // Fallback: Try to reconstruct players from game state for backwards compatibility
-          const gameState = game.serialize();
-          const parsedState = JSON.parse(gameState);
-          
-          if (parsedState.gameState?.players) {
-            // For Connect4 and similar games
-            const playerIds = Object.values(parsedState.gameState.players)
-              .filter((id): id is string => typeof id === 'string' && id !== '');
-            
-            for (const playerId of playerIds) {
-              if (!playerId.startsWith('bot_')) {
-                const player = await this.database.getPlayer(playerId);
-                if (player) {
-                  await session.addPlayer(player as any);
-                  // Also add to game_players table for future loads
-                  await this.database.addGamePlayer(dbSession.id, playerId);
-                }
-              }
-            }
+        for (const dbPlayer of players) {
+          const player = await this.database.getPlayer(dbPlayer.player_id);
+          if (player) {
+            await session.addPlayer(player as any);
+            this.addPlayerGame(player.id, dbSession.id);
           }
         }
         
         this.activeSessions.set(dbSession.id, session);
+        this.addChannelSession(dbSession.channel_id, dbSession.id);
         
         logger.info(`Loaded session: ${dbSession.id}`);
       } catch (error) {
@@ -633,93 +632,37 @@ export class GameEngine extends EventEmitter {
   }
 
   private setupAutoBot(sessionId: string, session: GameSession): void {
-    // Set up a timer to check if we should start with bot
+    // Similar to original but with cross-platform support
     const checkTimer = setInterval(async () => {
       const currentSession = this.activeSessions.get(sessionId);
       
-      // If session no longer exists, clear timer
       if (!currentSession) {
         clearInterval(checkTimer);
         return;
       }
       
-      // Get the game instance
       const game = (currentSession as any).game;
       
-      // Check if game is Connect4 and still waiting
-      if (game && 'isWaitingTimeExpired' in game && typeof game.isWaitingTimeExpired === 'function') {
-        if (game.isWaitingTimeExpired()) {
-          // Start bot game
-          logger.info(`Auto-starting bot game for session ${sessionId}`);
+      // Check if we're still in waiting state
+      if (game && game.getWaitingTimeLeft && game.getWaitingTimeLeft() <= 0) {
+        logger.info(`Auto-starting bot game for session ${sessionId}`);
+        
+        if (game.startBotGame) {
+          await game.startBotGame();
+          await this.saveSession(currentSession);
           
-          if ('startBotGame' in game && typeof game.startBotGame === 'function') {
-            await game.startBotGame();
-            await this.saveSession(currentSession);
-            
-            // Update the game message to show bot has joined
-            // Find the message ID for this session
-            let messageId: string | undefined;
-            let platform: string | undefined;
-            
-            for (const [msgId, sessId] of this.messageToSession.entries()) {
-              if (sessId === sessionId) {
-                messageId = msgId;
-                platform = currentSession.getPlatform();
-                break;
-              }
-            }
-            
-            if (messageId && platform) {
-              const adapter = this.platforms.get(platform as Platform);
-              if (adapter) {
-                const channelId = currentSession.getChannelId();
-                // Render for the creator (first player)
-                const players = currentSession.getPlayers();
-                const creatorId = players.length > 0 ? players[0].id : undefined;
-                const newState = await currentSession.renderGameState(creatorId);
-                
-                try {
-                  await adapter.editMessage(channelId, messageId, newState);
-                  logger.info(`Updated game message after auto-starting bot for session ${sessionId}`);
-                  
-                  // Check if it's bot's turn and make the first move
-                  if ('makeBotMove' in game && typeof game.makeBotMove === 'function') {
-                    const currentPlayer = game.gameState?.currentPlayer;
-                    const botPlayerId = game.gameState?.players?.[currentPlayer];
-                    
-                    if (botPlayerId && botPlayerId.startsWith('bot_')) {
-                      // Small delay before bot's first move
-                      setTimeout(async () => {
-                        try {
-                          await game.makeBotMove();
-                          await this.saveSession(currentSession);
-                          
-                          // Update message again after bot move
-                          const afterMoveState = await currentSession.renderGameState(creatorId);
-                          await adapter.editMessage(channelId, messageId, afterMoveState);
-                        } catch (error) {
-                          logger.error('Error making bot first move:', error);
-                        }
-                      }, 1500);
-                    }
-                  }
-                } catch (error) {
-                  logger.error('Error updating message after auto-bot start:', error);
-                }
-              }
-            }
-            
-            // Clear the timer
-            clearInterval(checkTimer);
-          }
+          // Update UI across all platforms
+          await this.updateGameUI(
+            currentSession,
+            currentSession.getChannelId(),
+            currentSession.getPlatform()
+          );
+          
+          clearInterval(checkTimer);
         }
-      } else {
-        // Not a waiting game, clear timer
-        clearInterval(checkTimer);
       }
-    }, 1000); // Check every second
+    }, 1000);
     
-    // Store timer reference for cleanup if needed
     (session as any).__autoBotTimer = checkTimer;
   }
 
@@ -740,50 +683,28 @@ export class GameEngine extends EventEmitter {
     }
   }
 
+  private addChannelSession(channelId: string, sessionId: string): void {
+    if (!this.channelToSession.has(channelId)) {
+      this.channelToSession.set(channelId, new Set());
+    }
+    this.channelToSession.get(channelId)!.add(sessionId);
+  }
+
+  private removeChannelSession(channelId: string, sessionId: string): void {
+    const sessions = this.channelToSession.get(channelId);
+    if (sessions) {
+      sessions.delete(sessionId);
+      if (sessions.size === 0) {
+        this.channelToSession.delete(channelId);
+      }
+    }
+  }
+
   private getPlayerGames(playerId: string): GameSession[] {
     const gameIds = this.playerGames.get(playerId) || new Set();
     return Array.from(gameIds)
       .map(id => this.activeSessions.get(id))
       .filter((s): s is GameSession => s !== undefined);
-  }
-
-  private getAvailableGames(): GameRegistryEntry[] {
-    const games = new Map<string, GameRegistryEntry>();
-    
-    for (const [key, entry] of this.gameRegistry) {
-      if (!entry.aliases.includes(key) && entry.enabled) {
-        games.set(entry.id, entry);
-      }
-    }
-    
-    return Array.from(games.values());
-  }
-
-  private groupGamesByCategory(games: GameRegistryEntry[]): Record<string, GameRegistryEntry[]> {
-    const grouped: Record<string, GameRegistryEntry[]> = {};
-    
-    // TODO: Get category from game instance
-    // For now, hardcode categories
-    const gameCategories: Record<string, GameCategory> = {
-      'tictactoe': GameCategory.BoardGames,
-      'wordle': GameCategory.WordGames,
-    };
-    
-    for (const game of games) {
-      const category = gameCategories[game.id] || GameCategory.BoardGames;
-      if (!grouped[category]) {
-        grouped[category] = [];
-      }
-      grouped[category].push(game);
-    }
-    
-    return grouped;
-  }
-
-  private formatCategoryName(category: string): string {
-    return category
-      .replace(/_/g, ' ')
-      .replace(/\b\w/g, l => l.toUpperCase());
   }
 
   private emitGameEvent(sessionId: string, type: GameEventType, data: any): void {
@@ -803,9 +724,7 @@ export class GameEngine extends EventEmitter {
   }
 
   getRegisteredGames(): string[] {
-    return Array.from(new Set(
-      Array.from(this.gameRegistry.values()).map(g => g.name)
-    ));
+    return this.gameRegistry.getAvailableGames().map(g => g.name);
   }
 
   getSession(sessionId: string): GameSession | undefined {

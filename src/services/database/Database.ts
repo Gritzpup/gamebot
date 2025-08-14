@@ -277,4 +277,58 @@ export class Database {
       [sessionId, playerId, nextPosition, 0, 1, isAi, new Date().toISOString()]
     );
   }
+
+  // Channel mapping methods
+  async getAllChannelMappings(): Promise<any[]> {
+    return this.db!.all(
+      'SELECT * FROM channel_mappings WHERE is_active = 1'
+    );
+  }
+
+  async createChannelMapping(
+    discordChannelId: string,
+    telegramChannelId: string,
+    createdBy?: string
+  ): Promise<void> {
+    await this.db!.run(
+      `INSERT INTO channel_mappings (discord_channel_id, telegram_channel_id, created_by)
+       VALUES (?, ?, ?)`,
+      [discordChannelId, telegramChannelId, createdBy]
+    );
+  }
+
+  async deleteChannelMapping(
+    discordChannelId: string,
+    telegramChannelId: string
+  ): Promise<void> {
+    await this.db!.run(
+      `UPDATE channel_mappings 
+       SET is_active = 0, updated_at = CURRENT_TIMESTAMP 
+       WHERE discord_channel_id = ? AND telegram_channel_id = ?`,
+      [discordChannelId, telegramChannelId]
+    );
+  }
+
+  async getChannelMappingsByDiscord(discordChannelId: string): Promise<any[]> {
+    return this.db!.all(
+      'SELECT * FROM channel_mappings WHERE discord_channel_id = ? AND is_active = 1',
+      discordChannelId
+    );
+  }
+
+  async getChannelMappingsByTelegram(telegramChannelId: string): Promise<any[]> {
+    return this.db!.all(
+      'SELECT * FROM channel_mappings WHERE telegram_channel_id = ? AND is_active = 1',
+      telegramChannelId
+    );
+  }
+
+  // Helper method to run raw SQL (for migrations)
+  async run(sql: string, params?: any[]): Promise<void> {
+    await this.db!.run(sql, params);
+  }
+
+  async get(sql: string, params?: any[]): Promise<any> {
+    return this.db!.get(sql, params);
+  }
 }

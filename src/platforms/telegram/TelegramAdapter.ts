@@ -252,6 +252,16 @@ export class TelegramAdapter extends PlatformAdapter {
       }
       const userId = msg.from.id.toString();
       
+      // Check if user is admin
+      let isAdmin = false;
+      try {
+        const chatMember = await this.bot.getChatMember(msg.chat.id, msg.from.id);
+        isAdmin = ['creator', 'administrator'].includes(chatMember.status);
+      } catch (error) {
+        // If we can't check admin status, default to false
+        logger.debug('Could not check admin status:', error);
+      }
+      
       // Create context
       const context: TelegramContext = {
         platform: Platform.Telegram,
@@ -262,6 +272,7 @@ export class TelegramAdapter extends PlatformAdapter {
         messageId: msg.message_id.toString(),
         chatId: msg.chat.id,
         messageThreadId: msg.message_thread_id,
+        isAdmin,
         from: {
           id: msg.from.id,
           firstName: msg.from.first_name,

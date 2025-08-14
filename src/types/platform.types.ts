@@ -36,6 +36,7 @@ export interface CommandContext {
   channelId: string;
   messageId: string;
   player?: Player;
+  isAdmin?: boolean;
   reply: (message: UIMessage) => Promise<string>;
   react: (emoji: string) => Promise<void>;
 }

@@ -78,6 +78,15 @@ export const performanceConfig = {
   maxConcurrentGames: getEnvNumber('MAX_CONCURRENT_GAMES', 100),
 };
 
+// Cross-platform relay configuration
+export const relayConfig = {
+  enabled: getEnvBool('RELAY_ENABLED', true),
+  telegramGameChannel: getEnvVar('TELEGRAM_GAME_CHANNEL', ''),
+  discordGameChannel: getEnvVar('DISCORD_GAME_CHANNEL', ''),
+  showPlatformPrefix: getEnvBool('RELAY_SHOW_PLATFORM', true),
+  showUsername: getEnvBool('RELAY_SHOW_USERNAME', true),
+};
+
 // API configuration
 export const apiConfig = {
   port: getEnvNumber('API_PORT', 3000),

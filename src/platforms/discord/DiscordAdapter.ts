@@ -211,6 +211,7 @@ export class DiscordAdapter extends PlatformAdapter {
         channelId: message.channel.id,
         messageId: message.id,
         guildId: message.guild.id,
+        isAdmin: message.member?.permissions.has('Administrator') || false,
         member: {
           id: message.author.id,
           displayName: message.member?.displayName || message.author.username,
@@ -259,6 +260,7 @@ export class DiscordAdapter extends PlatformAdapter {
   }
 
   private async handleSlashCommand(interaction: CommandInteraction): Promise<void> {
+    const member = interaction.guild?.members.cache.get(interaction.user.id);
     const context: DiscordContext = {
       platform: Platform.Discord,
       command: interaction.commandName,
@@ -267,6 +269,7 @@ export class DiscordAdapter extends PlatformAdapter {
       channelId: interaction.channelId,
       messageId: interaction.id,
       guildId: interaction.guildId || '',
+      isAdmin: member?.permissions.has('Administrator') || false,
       member: {
         id: interaction.user.id,
         displayName: interaction.member?.user.username || interaction.user.username,
