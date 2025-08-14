@@ -33,7 +33,8 @@ export class GameRegistry {
         const { productionGames, ...gameClasses } = prodModule;
         
         for (const gameInfo of productionGames) {
-          const GameClass = gameClasses[this.getClassName(gameInfo.id)];
+          const className = this.getClassName(gameInfo.id);
+          const GameClass = (gameClasses as any)[className];
           if (GameClass) {
             this.registerGame(gameInfo.id, gameInfo.name, GameClass);
           }
@@ -45,8 +46,9 @@ export class GameRegistry {
         const devModule = await import('../games/development');
         const { developmentGames, ...gameClasses } = devModule;
         
-        for (const gameInfo of developmentGames) {
-          const GameClass = gameClasses[this.getClassName(gameInfo.id)];
+        for (const gameInfo of developmentGames || []) {
+          const className = this.getClassName(gameInfo.id);
+          const GameClass = (gameClasses as any)[className];
           if (GameClass) {
             this.registerGame(gameInfo.id, gameInfo.name, GameClass);
           }

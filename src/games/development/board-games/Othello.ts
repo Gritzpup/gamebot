@@ -1,11 +1,11 @@
-import { BaseGame } from '../BaseGame';
+import { BaseGame } from '../../BaseGame';
 import {
   GameCategory,
   GameDifficulty,
   MoveResult,
   AIDifficulty
-} from '../../types/game.types';
-import { UIMessage } from '../../types';
+} from '../../../types/game.types';
+import { UIMessage } from '../../../types';
 
 interface OthelloState {
   board: (string | null)[][];

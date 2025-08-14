@@ -59,7 +59,7 @@ export const databaseConfig: DatabaseConfig = {
   path: getEnvVar('DATABASE_PATH', './gamebot.db'),
   redis: {
     host: getEnvVar('REDIS_HOST', 'localhost'),
-    port: getEnvNumber('REDIS_PORT', 6379),
+    port: getEnvNumber('REDIS_PORT', 23847), // Random port
     password: getEnvVar('REDIS_PASSWORD', ''),
     db: getEnvNumber('REDIS_DB', 0),
   },

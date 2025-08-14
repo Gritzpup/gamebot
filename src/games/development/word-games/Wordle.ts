@@ -1,10 +1,10 @@
-import { BaseGame } from '../BaseGame';
+import { BaseGame } from '../../BaseGame';
 import {
   GameCategory,
   GameDifficulty,
   MoveResult
-} from '../../types/game.types';
-import { UIMessage } from '../../types';
+} from '../../../types/game.types';
+import { UIMessage } from '../../../types';
 
 interface WordleState {
   targetWord: string;

@@ -148,7 +148,7 @@ export class GameEngine extends EventEmitter {
     }
     
     // Create game instance
-    const game = new GameClass();
+    const game = new (GameClass as any)();
     
     // Create session
     const sessionId = uuidv4();
@@ -177,8 +177,21 @@ export class GameEngine extends EventEmitter {
     this.addChannelSession(channelId, sessionId);
     
     // Set up bot move callback to update UI across platforms
+    // This will be called by GameSession when bot actually makes a move
     (session as any).onBotMove = async () => {
-      await this.updateGameUI(session, channelId, platform);
+      // Find the message ID for this session
+      let messageId: string | undefined;
+      for (const [msgId, sessId] of this.messageToSession.entries()) {
+        if (sessId === sessionId) {
+          messageId = msgId;
+          break;
+        }
+      }
+      
+      // Only update if we have a message ID (avoid creating duplicate messages)
+      if (messageId) {
+        await this.updateGameUI(session, channelId, platform, messageId);
+      }
     };
     
     // Save to database
@@ -207,20 +220,25 @@ export class GameEngine extends EventEmitter {
     specificMessageId?: string
   ): Promise<void> {
     const sessionId = session.getId();
+    const adapter = this.platforms.get(sourcePlatform);
     
-    // Update on source platform
-    if (specificMessageId) {
-      const adapter = this.platforms.get(sourcePlatform);
-      if (adapter) {
-        try {
-          const players = session.getPlayers();
-          const humanPlayerId = players.find(p => !p.id.startsWith('bot_'))?.id;
-          const newState = await session.renderGameState(humanPlayerId);
-          await adapter.editMessage(sourceChannelId, specificMessageId, newState);
-        } catch (error) {
-          logger.error('Error updating source platform message:', error);
-        }
+    if (!adapter) {
+      logger.error(`Platform adapter not found for ${sourcePlatform}`);
+      return;
+    }
+    
+    try {
+      const players = session.getPlayers();
+      const humanPlayerId = players.find(p => !p.id.startsWith('bot_'))?.id;
+      const newState = await session.renderGameState(humanPlayerId);
+      
+      // Update on source platform
+      if (specificMessageId) {
+        // Edit existing message
+        await adapter.editMessage(sourceChannelId, specificMessageId, newState);
       }
+    } catch (error) {
+      logger.error('Error updating game UI:', error);
     }
     
     // Relay to other platforms if enabled
@@ -379,8 +397,13 @@ export class GameEngine extends EventEmitter {
     // Play game command
     adapter.onCommand('play', async (ctx) => {
       if (ctx.args.length === 0) {
+        // Show available games with commands
+        const games = this.gameRegistry.getAvailableGames();
+        
+        const gameList = games.map(g => `• **${g.name}** - \`/play ${g.id}\``).join('\n');
+        
         await ctx.reply({
-          content: 'Please specify a game. Example: `/play connect4`',
+          content: `🎮 **Available Games**\n\n${gameList}\n\nExample: \`/play tictactoe\``,
         });
         return;
       }
@@ -505,6 +528,7 @@ export class GameEngine extends EventEmitter {
   }
 
   private async handleInteraction(interaction: any): Promise<void> {
+    
     // Extract session ID from interaction data
     let sessionId = interaction.data?.sessionId || 
                    interaction.gameSessionId;
@@ -546,8 +570,18 @@ export class GameEngine extends EventEmitter {
   private async loadActiveSessions(): Promise<void> {
     const sessions = await this.database.getActiveSessions();
     
+    // Clean up old sessions (older than 24 hours)
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    
     for (const dbSession of sessions) {
       try {
+        // Check if session is too old
+        const updatedAt = new Date(dbSession.updated_at);
+        if (updatedAt < twentyFourHoursAgo) {
+          logger.info(`Cleaning up stale session: ${dbSession.id} (last updated: ${dbSession.updated_at})`);
+          await this.database.endGameSession(dbSession.id);
+          continue;
+        }
         // Get game class from registry
         const GameClass = this.gameRegistry.getGameClass(dbSession.game_type);
         if (!GameClass) {
@@ -555,7 +589,7 @@ export class GameEngine extends EventEmitter {
           continue;
         }
         
-        const game = new GameClass();
+        const game = new (GameClass as any)();
         game.deserialize(dbSession.state);
         
         // Recreate session
@@ -651,12 +685,24 @@ export class GameEngine extends EventEmitter {
           await game.startBotGame();
           await this.saveSession(currentSession);
           
-          // Update UI across all platforms
-          await this.updateGameUI(
-            currentSession,
-            currentSession.getChannelId(),
-            currentSession.getPlatform()
-          );
+          // Update UI only if we have a tracked message
+          // Find the message ID for this session
+          let messageId: string | undefined;
+          for (const [msgId, sessId] of this.messageToSession.entries()) {
+            if (sessId === sessionId) {
+              messageId = msgId;
+              break;
+            }
+          }
+          
+          if (messageId) {
+            await this.updateGameUI(
+              currentSession,
+              currentSession.getChannelId(),
+              currentSession.getPlatform(),
+              messageId
+            );
+          }
           
           clearInterval(checkTimer);
         }

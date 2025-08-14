@@ -156,6 +156,7 @@ export interface GameInteraction {
   type: 'button_click' | 'select_option' | 'text_input' | 'command';
   platform: Platform;
   userId: string;
+  channelId?: string;
   gameSessionId: string;
   messageId?: string;
   data: any;

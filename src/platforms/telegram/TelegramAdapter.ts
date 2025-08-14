@@ -148,6 +148,11 @@ export class TelegramAdapter extends PlatformAdapter {
         options
       );
     } catch (error: any) {
+      // Ignore "message is not modified" errors - this is expected when game state hasn't changed
+      if (error.message && error.message.includes('message is not modified')) {
+        logger.debug('Message content unchanged, skipping edit');
+        return;
+      }
       logger.error('Error editing Telegram message:', error);
       
       // If it's a parsing error, try editing without formatting
@@ -313,6 +318,7 @@ export class TelegramAdapter extends PlatformAdapter {
         type: 'button_click',
         platform: Platform.Telegram,
         userId,
+        channelId: chatId,
         gameSessionId: data.sessionId || '',
         messageId,
         data: data,

@@ -1,12 +1,14 @@
 import { CommandContext } from '../../types/platform.types';
 import { CrossPlatformRelayService } from '../../relay/CrossPlatformRelayService';
+import { Database } from '../../services/database/Database';
 import { logger } from '../../utils/logger';
 
 export class LinkChannelsCommand {
   private relayService: CrossPlatformRelayService;
   
   constructor() {
-    this.relayService = CrossPlatformRelayService.getInstance();
+    const database = Database.getInstance();
+    this.relayService = CrossPlatformRelayService.getInstance(database);
   }
   
   async execute(ctx: CommandContext): Promise<void> {
@@ -62,7 +64,8 @@ export class UnlinkChannelsCommand {
   private relayService: CrossPlatformRelayService;
   
   constructor() {
-    this.relayService = CrossPlatformRelayService.getInstance();
+    const database = Database.getInstance();
+    this.relayService = CrossPlatformRelayService.getInstance(database);
   }
   
   async execute(ctx: CommandContext): Promise<void> {
@@ -115,7 +118,8 @@ export class ListLinksCommand {
   private relayService: CrossPlatformRelayService;
   
   constructor() {
-    this.relayService = CrossPlatformRelayService.getInstance();
+    const database = Database.getInstance();
+    this.relayService = CrossPlatformRelayService.getInstance(database);
   }
   
   async execute(ctx: CommandContext): Promise<void> {

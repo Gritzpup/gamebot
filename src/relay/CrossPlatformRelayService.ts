@@ -1,20 +1,22 @@
 import { Platform, UIMessage } from '../types';
-import { PlatformAdapter } from '../platforms/common/PlatformAdapter';
+import { IPlatformAdapter } from '../types/platform.types';
 import { ChannelMappingService } from './ChannelMappingService';
 import { MessageTransformer } from './MessageTransformer';
 import { RelayMessage, RelayConfig } from './types';
 import { logger } from '../utils/logger';
-import { Database } from '../database/Database';
+import { Database } from '../services/database/Database';
 
 export class CrossPlatformRelayService {
   private static instance: CrossPlatformRelayService;
-  private platformAdapters = new Map<Platform, PlatformAdapter>();
+  private platformAdapters = new Map<Platform, IPlatformAdapter>();
   private channelMappingService: ChannelMappingService;
   private messageTransformer: MessageTransformer;
   private config: RelayConfig;
   private messageCache = new Map<string, Date>(); // Prevent relay loops
+  private database: Database;
 
   private constructor(database: Database) {
+    this.database = database;
     this.channelMappingService = ChannelMappingService.getInstance(database);
     this.messageTransformer = new MessageTransformer();
     this.config = {
@@ -43,7 +45,7 @@ export class CrossPlatformRelayService {
     setInterval(() => this.cleanupMessageCache(), 60000);
   }
 
-  registerAdapter(platform: Platform, adapter: PlatformAdapter): void {
+  registerAdapter(platform: Platform, adapter: IPlatformAdapter): void {
     this.platformAdapters.set(platform, adapter);
     logger.info(`Registered ${platform} adapter for relay service`);
   }
@@ -229,7 +231,7 @@ export class CrossPlatformRelayService {
       );
       
       // Reload mappings
-      await this.mappingService.initialize();
+      await this.channelMappingService.initialize();
       
       logger.info(`Linked channels: Discord ${discordChannelId} <-> Telegram ${telegramChannelId}`);
     } catch (error) {
@@ -249,7 +251,7 @@ export class CrossPlatformRelayService {
       );
       
       // Reload mappings
-      await this.mappingService.initialize();
+      await this.channelMappingService.initialize();
       
       logger.info(`Unlinked channels: Discord ${discordChannelId} <-> Telegram ${telegramChannelId}`);
     } catch (error) {
