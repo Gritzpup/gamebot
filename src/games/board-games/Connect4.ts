@@ -61,12 +61,6 @@ export class Connect4 extends BaseGame {
     };
   }
 
-  // Override initialize
-  async initialize(session: any): Promise<void> {
-    await super.initialize(session);
-    // Creator will be set when renderState is called
-  }
-
   protected onGameStart(): void {
     // Get players from the session
     const playerIds = this.getPlayers();
@@ -128,15 +122,6 @@ export class Connect4 extends BaseGame {
         await this.session.addPlayer(botPlayer);
       }
     }
-  }
-
-  // Check if waiting time exceeded
-  isWaitingTimeExpired(): boolean {
-    if (this.gameState.gameState !== Connect4GameState.WAITING_FOR_PLAYER) {
-      return false;
-    }
-    const waitTime = Date.now() - (this.gameState.waitingStartTime || 0);
-    return waitTime > 10000; // 10 seconds
   }
 
   getWaitingTimeLeft(): number {
@@ -260,12 +245,6 @@ export class Connect4 extends BaseGame {
 
     // Make the move
     this.gameState.board[row][col] = color;
-    
-    // Animate the drop if we have message info
-    // Note: Animation will only work if the platform supports message editing
-    // and if we can track message IDs (future enhancement)
-    // await this.animateDiscDrop(col, color, row, messageId, channelId);
-    
     this.gameState.lastMove = { row, col };
     this.advanceTurn();
 
@@ -335,22 +314,22 @@ export class Connect4 extends BaseGame {
     // Ensure game state is initialized
     if (!this.gameState || !this.gameState.board) {
       return {
-        content: '<b>Connect 4</b>\n\nGame is initializing...',
+        content: '**Connect 4**\n\nGame is initializing...',
       };
     }
 
     // Handle waiting state
     if (this.gameState.gameState === Connect4GameState.WAITING_FOR_PLAYER) {
       const timeLeft = this.getWaitingTimeLeft();
-      let content = '<pre>\n';
+      let content = '```\n';
       content += '      ╔═══════════════════════════╗\n';
-      content += '      ║      CONNECT 4 🔴 🟡      ║\n';
+      content += '      ║      CONNECT 4 🔴 🟡     ║\n';
       content += '      ║                           ║\n';
       content += '      ║   Waiting for player...   ║\n';
-      content += `      ║       ⏱️  0:${timeLeft.toString().padStart(2, '0')} left        ║\n`;
+      content += `      ║      ⏱️  0:${timeLeft.toString().padStart(2, '0')} left        ║\n`;
       content += '      ║                           ║\n';
       content += '      ╚═══════════════════════════╝\n';
-      content += '</pre>\n\n';
+      content += '```\n\n';
       const creatorId = this.gameState.creatorId || this.gameState.players.R || '';
       const creatorName = creatorId ? this.getSafePlayerName(creatorId) : 'Unknown Player';
       content += `Created by: ${creatorName}\n\n`;
@@ -448,11 +427,11 @@ export class Connect4 extends BaseGame {
     content += '\n';
 
     // Create board display
-    let boardDisplay = '<pre>\n';
+    let boardDisplay = '```\n';
     
     // Board rows (no borders on sides)
     for (let row = 0; row < this.ROWS; row++) {
-      boardDisplay += '      ';  // Add 6 spaces prefix
+      boardDisplay += '       ';  // Add 7 spaces prefix
       for (let col = 0; col < this.COLS; col++) {
         const cell = board[row][col];
         let disc = '⚫';
@@ -469,7 +448,7 @@ export class Connect4 extends BaseGame {
     boardDisplay += '      ╠═══════════════════════╣\n';
     boardDisplay += '      ║  1  2  3  4  5  6  7  ║\n';
     boardDisplay += '      ╚═══════════════════════╝\n';
-    boardDisplay += '</pre>';
+    boardDisplay += '```';
 
 
     // Add board to content
@@ -477,7 +456,7 @@ export class Connect4 extends BaseGame {
     
     // Last move indicator
     if (this.gameState.lastMove) {
-      content += `\n<i>Last move: Column ${this.gameState.lastMove.col + 1}</i>`;
+      content += `\n_Last move: Column ${this.gameState.lastMove.col + 1}_`;
     }
 
     return {
@@ -488,28 +467,27 @@ export class Connect4 extends BaseGame {
 
   renderHelp(): UIMessage {
     return {
-      content: `<b>How to Play Connect 4</b>\n\n` +
+      content: `**How to Play Connect 4**\n\n` +
         `• Players take turns dropping colored discs into a 7-column, 6-row grid\n` +
         `• Discs fall to the lowest available position in the column\n` +
         `• The first player to get 4 discs in a row wins!\n` +
         `• Rows can be horizontal, vertical, or diagonal\n` +
         `• If the grid fills up with no winner, it's a draw\n\n` +
-        `<b>Commands</b>\n` +
+        `**Commands**\n` +
         `• Click a column number (1-7) to drop your disc\n` +
-        `• Use <code>/quit</code> to leave the game`,
+        `• Use \`/quit\` to leave the game`,
     };
   }
 
   renderStats(): UIMessage {
-    const players = this.getPlayers();
     const scores = this.getScores();
 
     return {
-      content: `<b>Game Statistics</b>\n\n` +
-        `<b>Players</b>\n` +
+      content: `**Game Statistics**\n\n` +
+        `**Players**\n` +
         `🔴 ${this.getSafePlayerName(this.gameState.players.R)}: ${scores[this.gameState.players.R] || 0} points\n` +
         `🟡 ${this.getSafePlayerName(this.gameState.players.Y)}: ${scores[this.gameState.players.Y] || 0} points\n` +
-        `\n<b>Turns Played: ${this.turnCount}</b>`,
+        `\n**Turns Played: ${this.turnCount}**`,
     };
   }
 
@@ -705,69 +683,5 @@ export class Connect4 extends BaseGame {
       }
     }
     return null;
-  }
-
-  private async animateDiscDrop(
-    col: number, 
-    color: 'R' | 'Y', 
-    finalRow: number,
-    messageId?: string,
-    channelId?: string
-  ): Promise<void> {
-    if (!this.session || !messageId || !channelId) return;
-    
-    const frames: string[] = [];
-    
-    // Create frames for animation
-    for (let animRow = 0; animRow <= finalRow; animRow++) {
-      const tempBoard = JSON.parse(JSON.stringify(this.gameState.board));
-      
-      // Clear any previous animation frames in this column
-      for (let r = 0; r < finalRow; r++) {
-        if (tempBoard[r][col] === null) {
-          tempBoard[r][col] = null;
-        }
-      }
-      
-      // Place disc at current animation row
-      tempBoard[animRow][col] = color;
-      
-      // Generate frame
-      let frame = '<pre>\n';
-      
-      for (let row = 0; row < this.ROWS; row++) {
-        frame += '      ';  // Add 6 spaces prefix
-        for (let c = 0; c < this.COLS; c++) {
-          const cell = tempBoard[row][c];
-          let disc = '⚫';
-          if (cell === 'R') disc = '🔴';
-          else if (cell === 'Y') disc = '🟡';
-          frame += disc;
-          if (c < this.COLS - 1) frame += ' ';
-        }
-        frame += '\n';
-      }
-      
-      frame += '      ╠═════════════╣\n';
-      frame += '      ║1 2 3 4 5 6 7║\n';
-      frame += '      ╚═════════════╝\n';
-      frame += '</pre>';
-      
-      frames.push(frame);
-    }
-    
-    // Play animation frames
-    for (const frame of frames) {
-      const animContent = frame + '\n\n⏳ <b>Dropping disc...</b>';
-      
-      // Update message with animation frame
-      await (this.session as any).updateMessage(messageId, {
-        content: animContent,
-        components: [] // Hide buttons during animation
-      });
-      
-      // Small delay between frames
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
   }
 }
