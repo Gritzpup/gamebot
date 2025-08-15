@@ -2,12 +2,15 @@ import Redis from 'ioredis';
 import { databaseConfig } from '../../config';
 import { logger } from '../../utils/logger';
 import { CacheGameState } from '../../types/database.types';
+import { RedisStateManager } from './RedisStateManager';
+import { RedisLock, createLock } from './RedisLock';
 
 export class RedisClient {
   private static instance: RedisClient;
   private client: Redis;
   private subscriber: Redis;
   private publisher: Redis;
+  private stateManager: RedisStateManager;
 
   private constructor() {
     const config = {
@@ -21,6 +24,8 @@ export class RedisClient {
     this.subscriber = new Redis(config);
     this.publisher = new Redis(config);
     
+    this.stateManager = new RedisStateManager(this.client, this.subscriber, this.publisher);
+    
     this.setupEventHandlers();
   }
 
@@ -29,6 +34,14 @@ export class RedisClient {
       RedisClient.instance = new RedisClient();
     }
     return RedisClient.instance;
+  }
+
+  getStateManager(): RedisStateManager {
+    return this.stateManager;
+  }
+
+  createLock(): RedisLock {
+    return createLock(this.client);
   }
 
   async connect(): Promise<void> {
@@ -90,6 +103,11 @@ export class RedisClient {
   async deleteGameState(sessionId: string): Promise<void> {
     const key = `game:${sessionId}`;
     await this.client.del(key);
+  }
+
+  async clearAllGameStates(): Promise<void> {
+    // Use state manager to clear all game data
+    await this.stateManager.clearAllGameData();
   }
 
   // Pub/Sub for real-time events

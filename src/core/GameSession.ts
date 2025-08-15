@@ -30,6 +30,7 @@ export class GameSession {
   private isDraw?: boolean;
   private lastActivity: Date;
   private messageIds: Map<Platform, string> = new Map();
+  private version: number = 0;
 
   constructor(
     id: string,
@@ -49,6 +50,24 @@ export class GameSession {
       turnCount: 0,
       gameData: {},
     };
+  }
+  
+  // Version management
+  getVersion(): number {
+    return this.version;
+  }
+  
+  setVersion(version: number): void {
+    this.version = version;
+  }
+  
+  // Additional getters for Redis state management
+  getCreatedAt(): Date {
+    return this.createdAt;
+  }
+  
+  getUpdatedAt(): Date {
+    return this.updatedAt;
   }
 
   async initialize(): Promise<void> {

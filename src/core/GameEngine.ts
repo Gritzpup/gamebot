@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { logger, logGameEvent } from '../utils/logger';
 import { Database } from '../services/database/Database';
 import { RedisClient } from '../services/redis/RedisClient';
+import { RedisStateManager, GameStateData } from '../services/redis/RedisStateManager';
 import { GameSession } from './GameSession';
 import { GameRegistry } from './GameRegistry';
 import { CrossPlatformRelayService } from '../relay/CrossPlatformRelayService';
@@ -31,16 +32,16 @@ import { interactionRateLimiter } from '../utils/RateLimiter';
 export class GameEngine extends EventEmitter {
   private static instance: GameEngine;
   private platforms: Map<Platform, IPlatformAdapter> = new Map();
-  private activeSessions: Map<string, GameSession> = new Map();
-  private playerGames: Map<string, Set<string>> = new Map();
-  private messageToSession: Map<string, string> = new Map(); // messageId -> sessionId
-  private channelToSession: Map<string, Set<string>> = new Map(); // channelId -> sessionIds
+  private sessionCache: Map<string, GameSession> = new Map(); // Local cache for performance
   private database: Database;
   private redis: RedisClient;
+  private stateManager: RedisStateManager;
   private gameRegistry: GameRegistry;
   private relayService: CrossPlatformRelayService;
   private isRunning: boolean = false;
   private cleanupInterval?: NodeJS.Timeout;
+  private interactionProcessor?: NodeJS.Timeout;
+  private botMoveProcessor?: NodeJS.Timeout;
   private updateQueue: Map<string, {
     session: GameSession;
     channelId: string;
@@ -54,6 +55,7 @@ export class GameEngine extends EventEmitter {
     super();
     this.database = Database.getInstance();
     this.redis = RedisClient.getInstance();
+    this.stateManager = this.redis.getStateManager();
     this.gameRegistry = GameRegistry.getInstance();
     this.relayService = CrossPlatformRelayService.getInstance(this.database);
   }
@@ -68,6 +70,37 @@ export class GameEngine extends EventEmitter {
   async initialize(): Promise<void> {
     logger.info('Initializing GameEngine...');
     
+    // WIPE ALL ACTIVE SESSIONS ON STARTUP
+    const environment = process.env.NODE_ENV || 'production';
+    logger.info(`🧹 Cleaning up all active game sessions on startup (${environment} mode)...`);
+    
+    try {
+      // Count existing sessions before cleanup
+      const activeCount = await this.database.get('SELECT COUNT(*) as count FROM game_sessions WHERE ended_at IS NULL');
+      
+      // Clear database
+      await this.database.run('UPDATE game_sessions SET ended_at = datetime("now") WHERE ended_at IS NULL');
+      await this.database.run('DELETE FROM game_players WHERE game_session_id IN (SELECT id FROM game_sessions WHERE ended_at IS NOT NULL)');
+      
+      // Clear Redis game states
+      await this.redis.clearAllGameStates();
+      
+      // Clear all Redis state
+      await this.stateManager.clearAllGameData();
+      
+      // Clear local caches
+      this.sessionCache.clear();
+      this.updateQueue.clear();
+      
+      logger.info(`✅ Successfully cleaned up ${activeCount?.count || 0} active game sessions and cleared all caches`);
+      
+      if (environment === 'development') {
+        logger.info('💡 Development mode: All previous games have been cleared to prevent orphaned sessions');
+      }
+    } catch (error) {
+      logger.error('Failed to wipe active sessions:', error);
+    }
+    
     // Load games based on environment
     await this.gameRegistry.loadGames();
     
@@ -76,8 +109,8 @@ export class GameEngine extends EventEmitter {
     
     logger.info(`Loaded ${this.gameRegistry.getAvailableGames().length} games`);
     
-    // Load active sessions from database
-    await this.loadActiveSessions();
+    // DO NOT load active sessions - they've been wiped!
+    // await this.loadActiveSessions();
   }
 
   async start(): Promise<void> {
@@ -97,6 +130,16 @@ export class GameEngine extends EventEmitter {
     this.updateProcessor = setInterval(() => {
       this.processUpdateQueue();
     }, 100); // Process every 100ms
+    
+    // Start interaction processor
+    this.interactionProcessor = setInterval(() => {
+      this.processInteractionQueues();
+    }, 50); // Process every 50ms
+    
+    // Start bot move processor
+    this.botMoveProcessor = setInterval(() => {
+      this.processBotMoves();
+    }, 1000); // Check every second
     
     logger.info('GameEngine started');
   }
@@ -119,8 +162,22 @@ export class GameEngine extends EventEmitter {
       clearInterval(this.updateProcessor);
     }
     
-    // Save all active sessions
-    await this.saveAllSessions();
+    // Stop interaction processor
+    if (this.interactionProcessor) {
+      clearInterval(this.interactionProcessor);
+    }
+    
+    // Stop bot move processor
+    if (this.botMoveProcessor) {
+      clearInterval(this.botMoveProcessor);
+    }
+    
+    // End all active sessions before stopping
+    logger.info('Ending all active game sessions...');
+    const sessionIds = await this.stateManager.getActiveSessions();
+    for (const sessionId of sessionIds) {
+      await this.endGameSession(sessionId, 'bot_shutdown');
+    }
     
     logger.info('GameEngine stopped');
   }
@@ -156,13 +213,14 @@ export class GameEngine extends EventEmitter {
     }
     
     // Check if creator has too many active games
-    const playerGames = this.playerGames.get(creatorId) || new Set();
-    if (playerGames.size >= 5) {
+    const playerGameCount = await this.stateManager.getPlayerGameCount(creatorId);
+    if (playerGameCount >= 5) {
       throw new Error('You have too many active games. Please finish some before starting new ones.');
     }
     
     // Check concurrent game limit
-    if (this.activeSessions.size >= performanceConfig.maxConcurrentGames) {
+    const activeSessions = await this.stateManager.getActiveSessions();
+    if (activeSessions.length >= performanceConfig.maxConcurrentGames) {
       throw new Error('Too many active games. Please try again later.');
     }
     
@@ -190,27 +248,20 @@ export class GameEngine extends EventEmitter {
     // Add creator to session
     await session.addPlayer(creator);
     
-    // Store session
-    this.activeSessions.set(sessionId, session);
-    this.addPlayerGame(creatorId, sessionId);
-    this.addChannelSession(channelId, sessionId);
+    // Store session in cache and Redis
+    this.sessionCache.set(sessionId, session);
+    await this.stateManager.addActiveSession(sessionId);
+    await this.stateManager.addPlayerGame(creatorId, sessionId);
+    await this.stateManager.addChannelSession(channelId, sessionId);
     
     // Set up bot move callback to update UI across platforms
     // This will be called by GameSession when bot actually makes a move
     (session as any).onBotMove = async () => {
-      // Find the message ID for this session
-      let messageId: string | undefined;
-      for (const [msgId, sessId] of this.messageToSession.entries()) {
-        if (sessId === sessionId) {
-          messageId = msgId;
-          break;
-        }
-      }
-      
-      // Only update if we have a message ID (avoid creating duplicate messages)
-      if (messageId) {
-        await this.updateGameUI(session, channelId, platform, messageId);
-      }
+      // Find the messageId for this session
+      const messageId = await this.stateManager.getSessionMessageId(sessionId);
+      logger.debug(`Bot move triggered for session ${sessionId}, messageId: ${messageId}`);
+      // Schedule bot move for processing with messageId
+      await this.stateManager.scheduleBotMove(sessionId, Date.now(), messageId || undefined);
     };
     
     // Save to database
@@ -240,6 +291,7 @@ export class GameEngine extends EventEmitter {
   ): Promise<void> {
     // Queue the update for debouncing
     const updateKey = `${session.getId()}-${sourcePlatform}-${sourceChannelId}`;
+    logger.debug(`Queueing UI update for session ${session.getId()}, messageId: ${specificMessageId}`);
     this.updateQueue.set(updateKey, {
       session,
       channelId: sourceChannelId,
@@ -256,6 +308,7 @@ export class GameEngine extends EventEmitter {
     for (const [key, update] of this.updateQueue.entries()) {
       if (now - update.timestamp >= DEBOUNCE_DELAY) {
         this.updateQueue.delete(key);
+        logger.debug(`Processing UI update for session ${update.session.getId()}`);
         this.performUIUpdate(update).catch(error => {
           logger.error('Error processing queued UI update:', error);
         });
@@ -315,7 +368,7 @@ export class GameEngine extends EventEmitter {
     sessionId: string,
     playerId: string
   ): Promise<boolean> {
-    const session = this.activeSessions.get(sessionId);
+    const session = await this.getOrLoadSession(sessionId);
     if (!session) {
       return false;
     }
@@ -334,7 +387,7 @@ export class GameEngine extends EventEmitter {
     // Try to add player
     const added = await session.addPlayer(player);
     if (added) {
-      this.addPlayerGame(playerId, sessionId);
+      await this.stateManager.addPlayerGame(playerId, sessionId);
       await this.saveSession(session);
       
       this.emitGameEvent(sessionId, GameEventType.PlayerJoined, {
@@ -349,13 +402,13 @@ export class GameEngine extends EventEmitter {
     sessionId: string,
     playerId: string
   ): Promise<void> {
-    const session = this.activeSessions.get(sessionId);
+    const session = await this.getOrLoadSession(sessionId);
     if (!session) {
       return;
     }
     
     await session.removePlayer(playerId);
-    this.removePlayerGame(playerId, sessionId);
+    await this.stateManager.removePlayerGame(playerId, sessionId);
     
     // Check if session should be ended
     if (session.getPlayerCount() === 0) {
@@ -373,7 +426,7 @@ export class GameEngine extends EventEmitter {
     sessionId: string,
     reason: string
   ): Promise<void> {
-    const session = this.activeSessions.get(sessionId);
+    const session = await this.getOrLoadSession(sessionId);
     if (!session) {
       return;
     }
@@ -384,25 +437,35 @@ export class GameEngine extends EventEmitter {
     // Clear any auto-bot timer
     if ((session as any).__autoBotTimer) {
       clearInterval((session as any).__autoBotTimer);
+      delete (session as any).__autoBotTimer;
     }
     
-    // Remove from active sessions
-    this.activeSessions.delete(sessionId);
-    
-    // Remove from player games
-    for (const player of session.getPlayers()) {
-      this.removePlayerGame(player.id, sessionId);
+    // Clear any pending UI updates for this session
+    const sessionUpdateKeys = Array.from(this.updateQueue.keys()).filter(key => 
+      key.startsWith(`${sessionId}-`)
+    );
+    for (const key of sessionUpdateKeys) {
+      this.updateQueue.delete(key);
     }
     
-    // Remove from channel sessions
+    // Clear edit queues in platform adapters
     const channelId = session.getChannelId();
-    this.removeChannelSession(channelId, sessionId);
+    const platform = session.getPlatform();
+    const adapter = this.platforms.get(platform);
+    if (adapter && 'clearEditQueue' in adapter) {
+      // Get all message IDs from Redis
+      const messageMappings = await this.redis.getStateManager().getMessageSession(sessionId);
+      // Note: We'll need to update this to get all messages for a session
+    }
+    
+    // Remove from cache
+    this.sessionCache.delete(sessionId);
     
     // Update database
     await this.database.endGameSession(sessionId);
     
-    // Clear from Redis
-    await this.redis.deleteGameState(sessionId);
+    // Clear all session data from Redis
+    await this.stateManager.deleteGameState(sessionId);
     
     this.emitGameEvent(sessionId, GameEventType.GameEnded, {
       reason,
@@ -427,7 +490,7 @@ export class GameEngine extends EventEmitter {
     
     // Active games command
     adapter.onCommand('mygames', async (ctx) => {
-      const playerGames = this.getPlayerGames(ctx.userId);
+      const playerGames = await this.getPlayerGames(ctx.userId);
       
       if (playerGames.length === 0) {
         await ctx.reply({
@@ -482,7 +545,7 @@ export class GameEngine extends EventEmitter {
         
         // Track message to session mapping
         if (messageId) {
-          this.messageToSession.set(messageId, session.getId());
+          await this.stateManager.setMessageSession(messageId, session.getId());
         }
         
         // Relay to linked channels if enabled
@@ -513,7 +576,7 @@ export class GameEngine extends EventEmitter {
     
     // Quit game command
     adapter.onCommand('quit', async (ctx) => {
-      const playerGames = this.getPlayerGames(ctx.userId);
+      const playerGames = await this.getPlayerGames(ctx.userId);
       
       if (playerGames.length === 0) {
         await ctx.reply({
@@ -592,7 +655,7 @@ export class GameEngine extends EventEmitter {
     
     // If no session ID in data, try to find it from message ID
     if (!sessionId && interaction.messageId) {
-      sessionId = this.messageToSession.get(interaction.messageId);
+      sessionId = await this.stateManager.getMessageSession(interaction.messageId);
     }
     
     if (!sessionId) {
@@ -600,13 +663,38 @@ export class GameEngine extends EventEmitter {
       return;
     }
     
-    const session = this.activeSessions.get(sessionId);
-    if (!session) {
-      logger.warn(`Session not found: ${sessionId}`);
-      return;
-    }
+    // Add interaction to queue for processing
+    await this.stateManager.pushInteraction(sessionId, interaction);
+  }
+  
+  private async processInteractionQueues(): Promise<void> {
+    const activeSessions = await this.stateManager.getActiveSessions();
     
-    try {
+    for (const sessionId of activeSessions) {
+      const queueLength = await this.stateManager.getInteractionQueueLength(sessionId);
+      if (queueLength === 0) continue;
+      
+      // Process one interaction per session per cycle
+      await this.processSessionInteraction(sessionId);
+    }
+  }
+  
+  private async processSessionInteraction(sessionId: string): Promise<void> {
+    const lock = this.stateManager.createLock();
+    
+    await lock.withLock(`session:${sessionId}`, async () => {
+      const interaction = await this.stateManager.popInteraction(sessionId);
+      if (!interaction) return;
+      
+      logger.debug(`Processing interaction for session ${sessionId}:`, interaction);
+      
+      const session = await this.getOrLoadSession(sessionId);
+      if (!session) {
+        logger.warn(`Session not found: ${sessionId}`);
+        return;
+      }
+      
+      try {
       // Special handling for join_game - ensure player is added to session
       if (interaction.data?.id === 'join_game') {
         const players = session.getPlayers();
@@ -632,14 +720,22 @@ export class GameEngine extends EventEmitter {
         // Save the final state
         await this.saveSession(session);
         
-        // Update UI one last time with the final game state
+        // Update UI one last time with the final game state - IMMEDIATELY, no debounce
         if (interaction.messageId && interaction.platform) {
-          await this.updateGameUI(
-            session,
-            session.getChannelId(),
-            interaction.platform,
-            interaction.messageId
-          );
+          const adapter = this.platforms.get(interaction.platform);
+          if (adapter) {
+            try {
+              const players = session.getPlayers();
+              const humanPlayerId = players.find(p => !p.id.startsWith('bot_'))?.id;
+              const finalState = await session.renderGameState(humanPlayerId);
+              
+              // Edit the message immediately with the final game state
+              await adapter.editMessage(session.getChannelId(), interaction.messageId, finalState);
+              logger.info(`Updated UI with final game state for session ${sessionId}`);
+            } catch (error) {
+              logger.error('Error updating final game UI:', error);
+            }
+          }
         }
         
         // Get winner information for logging
@@ -658,13 +754,17 @@ export class GameEngine extends EventEmitter {
         
         logger.info(endMessage);
         
-        // Properly end the game session
-        await this.endGameSession(sessionId, 'game_over');
+        // Small delay to ensure UI update completes before cleanup
+        setTimeout(async () => {
+          // Properly end the game session
+          await this.endGameSession(sessionId, 'game_over');
+        }, 500);
       } else {
         // Normal save for ongoing game
         await this.saveSession(session);
         
         // Update the game message with new state
+        logger.debug(`Game continues - updating UI for messageId: ${interaction.messageId}, platform: ${interaction.platform}`);
         if (interaction.messageId && interaction.platform) {
           await this.updateGameUI(
             session,
@@ -672,10 +772,37 @@ export class GameEngine extends EventEmitter {
             interaction.platform,
             interaction.messageId
           );
+        } else {
+          logger.warn(`Missing messageId or platform for UI update: messageId=${interaction.messageId}, platform=${interaction.platform}`);
         }
       }
-    } catch (error) {
-      logger.error('Error handling interaction:', error);
+      } catch (error) {
+        logger.error('Error handling interaction:', error);
+      }
+    }, { ttl: 30000 }); // 30 second lock timeout
+  }
+  
+  private async processBotMoves(): Promise<void> {
+    const now = Date.now();
+    const scheduledMoves = await this.stateManager.getScheduledBotMoves(now);
+    
+    for (const moveData of scheduledMoves) {
+      const { sessionId, messageId } = moveData;
+      await this.stateManager.removeBotMove(sessionId);
+      
+      const session = await this.getOrLoadSession(sessionId);
+      if (session && !session.isEnded()) {
+        const gameState = await this.stateManager.getGameState(sessionId);
+        if (gameState) {
+          logger.debug(`Processing bot move for session ${sessionId}, messageId: ${messageId}`);
+          await this.updateGameUI(
+            session,
+            session.getChannelId(),
+            session.getPlatform(),
+            messageId
+          );
+        }
+      }
     }
   }
 
@@ -718,12 +845,12 @@ export class GameEngine extends EventEmitter {
           const player = await this.database.getPlayer(dbPlayer.player_id);
           if (player) {
             await session.addPlayer(player as any);
-            this.addPlayerGame(player.id, dbSession.id);
+            await this.stateManager.addPlayerGame(player.id, dbSession.id);
           }
         }
         
-        this.activeSessions.set(dbSession.id, session);
-        this.addChannelSession(dbSession.channel_id, dbSession.id);
+        this.sessionCache.set(dbSession.id, session);
+        await this.stateManager.addChannelSession(dbSession.channel_id, dbSession.id);
         
         logger.info(`Loaded session: ${dbSession.id}`);
       } catch (error) {
@@ -731,7 +858,7 @@ export class GameEngine extends EventEmitter {
       }
     }
     
-    logger.info(`Loaded ${this.activeSessions.size} active sessions`);
+    logger.info(`Loaded ${this.sessionCache.size} active sessions`);
   }
 
   private async saveSession(session: GameSession): Promise<void> {
@@ -747,19 +874,34 @@ export class GameEngine extends EventEmitter {
       }
     }
     
-    await this.redis.saveGameState({
+    // Save to Redis with versioning
+    const gameState: GameStateData = {
       sessionId: session.getId(),
       gameType: session.getGameType(),
+      platform: session.getPlatform(),
+      channelId: session.getChannelId(),
       state: session.getState(),
       players: session.getPlayers().map(p => p.id),
       currentTurn: session.getCurrentTurn(),
-      lastActivity: Date.now(),
-    });
+      version: (session as any).version || 0,
+      createdAt: session.getCreatedAt().getTime(),
+      updatedAt: Date.now(),
+      lastActivity: session.getLastActivity().getTime(),
+      winner: session.getWinner(),
+      isDraw: session.getIsDraw(),
+      ended: session.isEnded()
+    };
+    
+    const saved = await this.stateManager.saveGameState(session.getId(), gameState);
+    if (saved) {
+      // Update session version
+      (session as any).version = gameState.version;
+    }
   }
 
   private async saveAllSessions(): Promise<void> {
-    const promises = Array.from(this.activeSessions.values()).map(session =>
-      this.saveSession(session)
+    const promises = Array.from(this.sessionCache.values()).map(session =>
+      this.saveSession(session as GameSession)
     );
     await Promise.all(promises);
   }
@@ -767,10 +909,11 @@ export class GameEngine extends EventEmitter {
   private async cleanupInactiveSessions(): Promise<void> {
     const now = Date.now();
     const timeout = 30 * 60 * 1000; // 30 minutes
+    const activeSessions = await this.stateManager.getActiveSessions();
     
-    for (const [sessionId, session] of this.activeSessions) {
-      const lastActivity = session.getLastActivity();
-      if (now - lastActivity.getTime() > timeout) {
+    for (const sessionId of activeSessions) {
+      const gameState = await this.stateManager.getGameState(sessionId);
+      if (gameState && (now - gameState.lastActivity > timeout)) {
         logger.info(`Cleaning up inactive session: ${sessionId}`);
         await this.endGameSession(sessionId, 'timeout');
       }
@@ -778,9 +921,9 @@ export class GameEngine extends EventEmitter {
   }
 
   private setupAutoBot(sessionId: string, session: GameSession): void {
-    // Similar to original but with cross-platform support
+    // Schedule bot moves through Redis
     const checkTimer = setInterval(async () => {
-      const currentSession = this.activeSessions.get(sessionId);
+      const currentSession = await this.getOrLoadSession(sessionId);
       
       if (!currentSession) {
         clearInterval(checkTimer);
@@ -797,24 +940,9 @@ export class GameEngine extends EventEmitter {
           await game.startBotGame();
           await this.saveSession(currentSession);
           
-          // Update UI only if we have a tracked message
-          // Find the message ID for this session
-          let messageId: string | undefined;
-          for (const [msgId, sessId] of this.messageToSession.entries()) {
-            if (sessId === sessionId) {
-              messageId = msgId;
-              break;
-            }
-          }
-          
-          if (messageId) {
-            await this.updateGameUI(
-              currentSession,
-              currentSession.getChannelId(),
-              currentSession.getPlatform(),
-              messageId
-            );
-          }
+          // Update UI - bot moves are now scheduled through Redis
+          const messageId = await this.stateManager.getSessionMessageId(sessionId);
+          await this.stateManager.scheduleBotMove(sessionId, Date.now(), messageId || undefined);
           
           clearInterval(checkTimer);
         }
@@ -824,45 +952,18 @@ export class GameEngine extends EventEmitter {
     (session as any).__autoBotTimer = checkTimer;
   }
 
-  private addPlayerGame(playerId: string, sessionId: string): void {
-    if (!this.playerGames.has(playerId)) {
-      this.playerGames.set(playerId, new Set());
-    }
-    this.playerGames.get(playerId)!.add(sessionId);
-  }
-
-  private removePlayerGame(playerId: string, sessionId: string): void {
-    const games = this.playerGames.get(playerId);
-    if (games) {
-      games.delete(sessionId);
-      if (games.size === 0) {
-        this.playerGames.delete(playerId);
+  private async getPlayerGames(playerId: string): Promise<GameSession[]> {
+    const gameIds = await this.stateManager.getPlayerGames(playerId);
+    const sessions: GameSession[] = [];
+    
+    for (const sessionId of gameIds) {
+      const session = await this.getOrLoadSession(sessionId);
+      if (session) {
+        sessions.push(session);
       }
     }
-  }
-
-  private addChannelSession(channelId: string, sessionId: string): void {
-    if (!this.channelToSession.has(channelId)) {
-      this.channelToSession.set(channelId, new Set());
-    }
-    this.channelToSession.get(channelId)!.add(sessionId);
-  }
-
-  private removeChannelSession(channelId: string, sessionId: string): void {
-    const sessions = this.channelToSession.get(channelId);
-    if (sessions) {
-      sessions.delete(sessionId);
-      if (sessions.size === 0) {
-        this.channelToSession.delete(channelId);
-      }
-    }
-  }
-
-  private getPlayerGames(playerId: string): GameSession[] {
-    const gameIds = this.playerGames.get(playerId) || new Set();
-    return Array.from(gameIds)
-      .map(id => this.activeSessions.get(id))
-      .filter((s): s is GameSession => s !== undefined);
+    
+    return sessions;
   }
 
   private emitGameEvent(sessionId: string, type: GameEventType, data: any): void {
@@ -877,15 +978,58 @@ export class GameEngine extends EventEmitter {
   }
 
   // Public getters
-  getActiveGameCount(): number {
-    return this.activeSessions.size;
+  async getActiveGameCount(): Promise<number> {
+    const sessions = await this.stateManager.getActiveSessions();
+    return sessions.length;
   }
 
   getRegisteredGames(): string[] {
     return this.gameRegistry.getAvailableGames().map(g => g.name);
   }
 
-  getSession(sessionId: string): GameSession | undefined {
-    return this.activeSessions.get(sessionId);
+  async getSession(sessionId: string): Promise<GameSession | undefined> {
+    const session = await this.getOrLoadSession(sessionId);
+    return session || undefined;
+  }
+  
+  private async getOrLoadSession(sessionId: string): Promise<GameSession | null> {
+    // Check cache first
+    let session = this.sessionCache.get(sessionId);
+    if (session) {
+      return session;
+    }
+    
+    // Load from Redis
+    const gameState = await this.stateManager.getGameState(sessionId);
+    if (!gameState) {
+      return null;
+    }
+    
+    // Recreate session
+    const GameClass = this.gameRegistry.getGameClass(gameState.gameType);
+    if (!GameClass) {
+      logger.warn(`Game type not found: ${gameState.gameType}`);
+      return null;
+    }
+    
+    const game = new (GameClass as any)();
+    if (gameState.state) {
+      game.deserialize(gameState.state);
+    }
+    
+    session = new GameSession(
+      sessionId,
+      game,
+      gameState.platform,
+      gameState.channelId
+    );
+    
+    // Cache it
+    this.sessionCache.set(sessionId, session);
+    
+    // Set version
+    (session as any).version = gameState.version;
+    
+    return session;
   }
 }

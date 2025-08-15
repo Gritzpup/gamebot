@@ -18,6 +18,8 @@
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
     "test": "jest",
+    "redis:start": "./start-redis.sh",
+    "redis:stop": "./stop-redis.sh",
     "test:watch": "jest --watch",
     "db:init": "tsx scripts/setup.ts",
     "db:migrate": "tsx scripts/run-migrations.ts",
