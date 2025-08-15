@@ -19,7 +19,7 @@ interface TicTacToeState {
 }
 
 export class TicTacToe extends BaseGame {
-  id = 'tictactoe';
+  id = 'tic-tac-toe';
   name = 'Tic Tac Toe';
   description = 'Classic 3x3 grid game. Get three in a row to win!';
   category = GameCategory.BoardGames;

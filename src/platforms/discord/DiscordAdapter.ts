@@ -198,7 +198,36 @@ export class DiscordAdapter extends PlatformAdapter {
       
       // Parse command
       const parsed = this.parseCommand(text);
+      
+      // If not a command, check if it's a Wordle guess
       if (!parsed) {
+        // Check if it's a 5-letter word (potential Wordle guess)
+        const cleanText = text.trim().toUpperCase();
+        if (cleanText.length === 5 && /^[A-Z]+$/.test(cleanText)) {
+          // Find if user has an active Wordle game
+          const gameSessionId = await this.findActiveWordleSession(message.author.id, message.channel.id);
+          if (gameSessionId) {
+            // Create a text input interaction for Wordle
+            const gameInteraction: GameInteraction = {
+              id: message.id,
+              type: 'text_input',
+              platform: Platform.Discord,
+              userId: message.author.id,
+              channelId: message.channel.id,
+              gameSessionId,
+              messageId: undefined, // Text inputs don't have a specific game message
+              data: { text: cleanText },
+              timestamp: new Date(),
+            };
+            
+            // Update player activity
+            await this.updatePlayerActivity(message.author.id);
+            
+            // Handle the guess
+            await this.handleInteraction(gameInteraction);
+            return;
+          }
+        }
         return;
       }
       
@@ -349,5 +378,29 @@ export class DiscordAdapter extends PlatformAdapter {
 
   protected formatUserMention(userId: string): string {
     return `<@${userId}>`;
+  }
+  
+  private async findActiveWordleSession(userId: string, channelId: string): Promise<string | null> {
+    try {
+      // Get Redis state manager to find active games
+      const redis = (await import('../../services/redis/RedisClient')).RedisClient.getInstance();
+      const stateManager = redis.getStateManager();
+      
+      // Get player's active games
+      const playerGames = await stateManager.getPlayerGames(userId);
+      
+      // Check each game to see if it's a Wordle game
+      for (const sessionId of playerGames) {
+        const gameState = await stateManager.getGameState(sessionId);
+        if (gameState && gameState.gameType === 'wordle' && gameState.channelId === channelId && !gameState.ended) {
+          return sessionId;
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      logger.error('Error finding active Wordle session:', error);
+      return null;
+    }
   }
 }

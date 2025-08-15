@@ -7,7 +7,7 @@ async function testGames() {
   const engine = GameEngine.getInstance();
   await engine.initialize();
   
-  const games = ['tictactoe', 'connect4', 'othello'];
+  const games = ['tic-tac-toe', 'connect-4', 'othello'];
   const testPlayerId1 = 'test-player-1';
   const testPlayerId2 = 'test-player-2';
   

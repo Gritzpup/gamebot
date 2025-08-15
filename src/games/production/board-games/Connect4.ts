@@ -31,7 +31,7 @@ interface Connect4State {
 }
 
 export class Connect4 extends BaseGame {
-  id = 'connect4';
+  id = 'connect-4';
   name = 'Connect 4';
   description = 'Drop colored discs into a 7x6 grid. First to get 4 in a row wins!';
   category = GameCategory.BoardGames;

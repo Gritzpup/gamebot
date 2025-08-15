@@ -3,9 +3,16 @@ import {
   GameCategory,
   GameDifficulty,
   MoveResult,
-  AIDifficulty
+  AIDifficulty,
+  GameEndReason
 } from '../../../types/game.types';
 import { UIMessage } from '../../../types';
+
+enum TicTacToeGameState {
+  WAITING_FOR_PLAYER = 'waiting_for_player',
+  PLAYING = 'playing',
+  GAME_OVER = 'game_over'
+}
 
 interface TicTacToeState {
   board: (string | null)[][];
@@ -14,10 +21,17 @@ interface TicTacToeState {
     X: string;
     O: string;
   };
+  gameState: TicTacToeGameState;
+  waitingStartTime?: number;
+  isVsBot?: boolean;
+  botDifficulty?: AIDifficulty;
+  creatorId?: string;
+  winnerId?: string;
+  isDraw?: boolean;
 }
 
 export class TicTacToe extends BaseGame {
-  id = 'tictactoe';
+  id = 'tic-tac-toe';
   name = 'Tic Tac Toe';
   description = 'Classic 3x3 grid game. Get three in a row to win!';
   category = GameCategory.BoardGames;
@@ -37,17 +51,151 @@ export class TicTacToe extends BaseGame {
       players: {
         X: '',
         O: ''
-      }
+      },
+      gameState: TicTacToeGameState.WAITING_FOR_PLAYER,
+      waitingStartTime: Date.now(),
+      creatorId: ''
     };
   }
 
   protected onGameStart(): void {
     const players = this.getPlayers();
-    this.gameState.players.X = players[0];
-    this.gameState.players.O = players[1];
+    
+    // Set first player if not already set
+    if (players.length > 0 && !this.gameState.players.X) {
+      this.gameState.players.X = players[0];
+      this.gameState.creatorId = players[0];
+    }
+    
+    // Set second player if we have one
+    if (players.length > 1) {
+      this.gameState.players.O = players[1];
+      this.gameState.gameState = TicTacToeGameState.PLAYING;
+    }
+  }
+
+  // Method to handle second player joining or bot activation
+  async handlePlayerJoin(playerId: string): Promise<void> {
+    if (this.gameState.gameState === TicTacToeGameState.WAITING_FOR_PLAYER) {
+      this.gameState.players.O = playerId;
+      this.gameState.gameState = TicTacToeGameState.PLAYING;
+      this.gameState.isVsBot = false;
+    }
+  }
+
+  // Method to start bot game
+  async startBotGame(difficulty: AIDifficulty = AIDifficulty.Intermediate): Promise<void> {
+    if (this.gameState.gameState === TicTacToeGameState.WAITING_FOR_PLAYER) {
+      const botId = 'bot_' + Date.now();
+      this.gameState.players.O = botId;
+      this.gameState.gameState = TicTacToeGameState.PLAYING;
+      this.gameState.isVsBot = true;
+      this.gameState.botDifficulty = difficulty;
+      
+      // Add bot as a player to the session
+      if (this.session) {
+        const botPlayer = {
+          id: botId,
+          platform: this.session.getPlatform(),
+          platformId: botId,
+          username: 'Bot',
+          displayName: '🤖 Bot',
+          avatar: undefined,
+          stats: {
+            gamesPlayed: 0,
+            gamesWon: 0,
+            gamesLost: 0,
+            gamesDraw: 0,
+            winStreak: 0,
+            bestWinStreak: 0,
+            totalScore: 0,
+            achievements: []
+          },
+          createdAt: new Date(),
+          lastActiveAt: new Date()
+        };
+        
+        await this.session.addPlayer(botPlayer);
+      }
+    }
+  }
+
+  getWaitingTimeLeft(): number {
+    if (this.gameState.gameState !== TicTacToeGameState.WAITING_FOR_PLAYER) {
+      return 0;
+    }
+    const elapsed = Date.now() - (this.gameState.waitingStartTime || 0);
+    const remaining = Math.max(0, 10000 - elapsed);
+    return Math.ceil(remaining / 1000);
+  }
+
+  async processInteraction(interaction: any): Promise<MoveResult | null> {
+    // Handle waiting room buttons
+    if (this.gameState.gameState === TicTacToeGameState.WAITING_FOR_PLAYER) {
+      if (interaction.data?.id === 'join_game') {
+        // Check if player is not the creator
+        if (interaction.userId === this.gameState.players.X) {
+          return {
+            success: false,
+            message: "You can't join your own game!"
+          };
+        }
+        
+        // Add player and start game
+        await this.handlePlayerJoin(interaction.userId);
+        return {
+          success: true,
+          message: 'Game started!',
+          stateChanged: true
+        };
+      } else if (interaction.data?.id === 'start_bot') {
+        // Start bot game
+        await this.startBotGame(AIDifficulty.Intermediate);
+        return {
+          success: true,
+          message: 'Game started vs Bot!',
+          stateChanged: true
+        };
+      }
+    }
+    
+    // Handle cancel button
+    if (interaction.data?.id === 'cancel_game') {
+      // Check if the player is in the game
+      const playerId = interaction.userId;
+      if (playerId !== this.gameState.players.X && playerId !== this.gameState.players.O) {
+        return {
+          success: false,
+          message: "You're not in this game!"
+        };
+      }
+      
+      const cancellingPlayer = this.getSafePlayerName(playerId);
+      this.gameState.gameState = TicTacToeGameState.GAME_OVER;
+      await this.end(GameEndReason.PlayerQuit);
+      return {
+        success: true,
+        gameEnded: true,
+        message: `Game cancelled by ${cancellingPlayer}`,
+        stateChanged: true
+      };
+    }
+    
+    // Handle move buttons during game
+    if (interaction.data?.id && interaction.data.id.startsWith('move_')) {
+      const [_, row, col] = interaction.data.id.split('_');
+      return this.makeMove(interaction.userId, { row: parseInt(row), col: parseInt(col) });
+    }
+    
+    return null;
   }
 
   async validateMove(playerId: string, move: any): Promise<boolean> {
+    // Check if game is in playing state
+    if (this.gameState.gameState !== TicTacToeGameState.PLAYING) {
+      return false;
+    }
+
     // Check if it's the player's turn
     if (!this.isPlayerTurn(playerId)) {
       return false;
@@ -70,6 +218,14 @@ export class TicTacToe extends BaseGame {
   }
 
   async makeMove(playerId: string, move: any): Promise<MoveResult> {
+    // Check if game is in playing state
+    if (this.gameState.gameState !== TicTacToeGameState.PLAYING) {
+      return {
+        success: false,
+        message: 'Game is not in playing state'
+      };
+    }
+
     const { row, col } = move;
     const symbol = this.getPlayerSymbol(playerId);
 
@@ -79,6 +235,9 @@ export class TicTacToe extends BaseGame {
 
     // Check for win
     if (this.checkWin(symbol)) {
+      this.gameState.gameState = TicTacToeGameState.GAME_OVER;
+      this.gameState.winnerId = playerId;
+      await this.end(GameEndReason.NormalEnd);
       return {
         success: true,
         gameEnded: true,
@@ -89,6 +248,9 @@ export class TicTacToe extends BaseGame {
 
     // Check for draw
     if (this.checkDraw()) {
+      this.gameState.gameState = TicTacToeGameState.GAME_OVER;
+      this.gameState.isDraw = true;
+      await this.end(GameEndReason.NormalEnd);
       return {
         success: true,
         gameEnded: true,
@@ -101,11 +263,19 @@ export class TicTacToe extends BaseGame {
     this.gameState.currentPlayer = this.gameState.currentPlayer === 'X' ? 'O' : 'X';
     const nextPlayerId = this.gameState.players[this.gameState.currentPlayer];
 
+    // Check if next player is bot
+    const shouldMakeBotMove = this.gameState.isVsBot && this.isPlayerBot(nextPlayerId);
+
     return {
       success: true,
       nextPlayer: nextPlayerId,
-      message: `${this.getSafePlayerName(nextPlayerId)}'s turn`
+      message: `${this.getSafePlayerName(nextPlayerId)}'s turn`,
+      shouldMakeBotMove
     };
+  }
+
+  private isPlayerBot(playerId: string): boolean {
+    return playerId.startsWith('bot_');
   }
 
   async getValidMoves(playerId: string): Promise<any[]> {
@@ -123,57 +293,160 @@ export class TicTacToe extends BaseGame {
   }
 
   renderState(forPlayer?: string): UIMessage {
+    // Set creator if not set yet
+    if (!this.gameState.creatorId && this.session) {
+      const playerIds = this.getPlayers();
+      if (playerIds.length > 0) {
+        this.gameState.creatorId = playerIds[0];
+        this.gameState.players.X = playerIds[0];
+      }
+    }
+
+    // Ensure game state is initialized
+    if (!this.gameState || !this.gameState.board) {
+      return {
+        content: '**Tic Tac Toe**\n\nGame is initializing...',
+      };
+    }
+
+    // Handle waiting state
+    if (this.gameState.gameState === TicTacToeGameState.WAITING_FOR_PLAYER) {
+      const timeLeft = this.getWaitingTimeLeft();
+      let content = '```\n';
+      content += '      ╔═══════════════════════════╗\n';
+      content += '      ║     TIC TAC TOE ❌ ⭕    ║\n';
+      content += '      ║                           ║\n';
+      content += '      ║   Waiting for player...   ║\n';
+      content += `      ║      ⏱️  0:${timeLeft.toString().padStart(2, '0')} left        ║\n`;
+      content += '      ║                           ║\n';
+      content += '      ╚═══════════════════════════╝\n';
+      content += '```\n\n';
+      const creatorId = this.gameState.creatorId || this.gameState.players.X || '';
+      const creatorName = creatorId ? this.getSafePlayerName(creatorId) : 'Unknown Player';
+      content += `Created by: ${creatorName}\n\n`;
+      content += 'Waiting for another player to join...\n';
+      content += 'Game will start with bot if no one joins.\n';
+
+      const components = [
+        {
+          type: 'button' as const,
+          id: 'join_game',
+          label: '🎮 Join Game',
+          style: 'primary' as const,
+        },
+        {
+          type: 'button' as const,
+          id: 'start_bot',
+          label: '🤖 Play vs Bot',
+          style: 'secondary' as const,
+        },
+        {
+          type: 'button' as const,
+          id: 'cancel_game',
+          label: '❌',
+          style: 'danger' as const,
+        }
+      ];
+
+      return { content, components };
+    }
+
     const board = this.gameState.board;
     const currentPlayerId = this.gameState.players[this.gameState.currentPlayer];
-    const isYourTurn = forPlayer === currentPlayerId;
+    const isYourTurn = forPlayer === currentPlayerId && !this.isPlayerBot(currentPlayerId);
+
+    // Start with title
+    let content = '🎮 TIC TAC TOE ❌ ⭕\n\n';
+
+    // Add player info at the top
+    const xPlayer = this.getSafePlayerName(this.gameState.players.X);
+    const oPlayer = this.gameState.players.O ? 
+      (this.isPlayerBot(this.gameState.players.O) ? '🤖 Bot' : this.getSafePlayerName(this.gameState.players.O)) : 
+      'Waiting...';
+    content += `❌ ${xPlayer}  vs  ⭕ ${oPlayer}\n`;
+
+    // Add turn info
+    if (this.isEnded || this.gameState.gameState === TicTacToeGameState.GAME_OVER) {
+      content += '🏆 Game Over! ';
+      
+      // Check who won
+      if (this.gameState.isDraw) {
+        content += "It's a draw!\n";
+      } else if (this.gameState.winnerId) {
+        const winnerSymbol = this.gameState.winnerId === this.gameState.players.X ? '❌' : '⭕';
+        const winnerName = this.getSafePlayerName(this.gameState.winnerId);
+        content += `${winnerSymbol} ${winnerName} wins!\n`;
+      } else {
+        // Game was cancelled or ended without a winner
+        content += '\n';
+      }
+    } else {
+      const currentSymbol = this.gameState.currentPlayer === 'X' ? '❌' : '⭕';
+      const currentName = this.isPlayerBot(currentPlayerId) ? '🤖 Bot' : this.getSafePlayerName(currentPlayerId);
+      content += `Current Turn: ${currentSymbol} ${currentName}`;
+      
+      if (isYourTurn) {
+        content += ' - Your turn!';
+      } else if (this.isPlayerBot(currentPlayerId)) {
+        content += ' - ⏳ Thinking...';
+      }
+      content += '\n';
+    }
+
+    // Add a line break before the board
+    content += '\n';
 
     // Create board display
     let boardDisplay = '```\n';
     for (let row = 0; row < 3; row++) {
       for (let col = 0; col < 3; col++) {
-        const cell = board[row][col] || '·';
-        boardDisplay += ` ${cell} `;
+        const cell = board[row][col];
+        const symbol = cell === 'X' ? '❌' : cell === 'O' ? '⭕' : '⬜';
+        boardDisplay += ` ${symbol} `;
         if (col < 2) boardDisplay += '│';
       }
       if (row < 2) boardDisplay += '\n───┼───┼───\n';
     }
     boardDisplay += '\n```';
-
-    // Create message
-    let content = `**Tic Tac Toe**\n\n`;
-    content += boardDisplay + '\n\n';
-    
-    if (this.isEnded) {
-      content += '**Game Over!**\n';
-    } else {
-      content += `**Current Turn: ${this.getSafePlayerName(currentPlayerId)} (${this.gameState.currentPlayer})**\n`;
-      if (isYourTurn) {
-        content += '**Your turn!** Click a button to make your move.';
-      }
-    }
+    content += boardDisplay;
 
     // Create button grid for moves
     const components = [];
-    if (!this.isEnded && isYourTurn) {
-      for (let row = 0; row < 3; row++) {
-        for (let col = 0; col < 3; col++) {
-          if (board[row][col] === null) {
-            components.push({
-              type: 'button' as const,
-              id: `move_${row}_${col}`,
-              label: '·',
-              style: 'secondary' as const,
-            });
-          } else {
-            components.push({
-              type: 'button' as const,
-              id: `occupied_${row}_${col}`,
-              label: board[row][col]!,
-              style: board[row][col] === 'X' ? 'primary' as const : 'success' as const,
-              disabled: true,
-            });
+    if (!this.isEnded && this.gameState.gameState === TicTacToeGameState.PLAYING) {
+      // Show buttons for human players only (not when bot is thinking)
+      const showButtons = !this.isPlayerBot(currentPlayerId);
+      
+      if (showButtons) {
+        for (let row = 0; row < 3; row++) {
+          for (let col = 0; col < 3; col++) {
+            if (board[row][col] === null) {
+              components.push({
+                type: 'button' as const,
+                id: `move_${row}_${col}`,
+                label: '⬜',
+                style: isYourTurn ? 'success' as const : 'secondary' as const,
+                disabled: !isYourTurn,
+              });
+            } else {
+              components.push({
+                type: 'button' as const,
+                id: `occupied_${row}_${col}`,
+                label: board[row][col] === 'X' ? '❌' : '⭕',
+                style: board[row][col] === 'X' ? 'primary' as const : 'danger' as const,
+                disabled: true,
+              });
+            }
           }
         }
+
+        // Add cancel button
+        components.push({
+          type: 'button' as const,
+          id: 'cancel_game',
+          label: '❌ Cancel',
+          style: 'danger' as const,
+          disabled: false,
+        });
       }
     }
 
@@ -181,6 +454,36 @@ export class TicTacToe extends BaseGame {
       content,
       components: components.length > 0 ? components : undefined,
     };
+  }
+
+  async makeBotMove(): Promise<MoveResult> {
+    const botPlayerId = this.gameState.players[this.gameState.currentPlayer];
+    const difficulty = this.gameState.botDifficulty || AIDifficulty.Intermediate;
+    
+    // Small delay to simulate thinking
+    await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 500));
+    
+    let move;
+    switch (difficulty) {
+      case AIDifficulty.Beginner:
+        move = this.getRandomMove();
+        break;
+      case AIDifficulty.Intermediate:
+        move = Math.random() < 0.5 ? this.getRandomMove() : this.getBestMove();
+        break;
+      case AIDifficulty.Advanced:
+      case AIDifficulty.Master:
+        move = this.getBestMove();
+        break;
+      default:
+        move = this.getRandomMove();
+    }
+
+    if (!move) {
+      throw new Error('No valid moves available');
+    }
+
+    return this.makeMove(botPlayerId, move);
   }
 
   renderHelp(): UIMessage {
@@ -213,29 +516,7 @@ export class TicTacToe extends BaseGame {
   }
 
   async makeAIMove(difficulty: AIDifficulty): Promise<MoveResult> {
-    const aiPlayerId = this.gameState.players[this.gameState.currentPlayer];
-    
-    let move;
-    switch (difficulty) {
-      case AIDifficulty.Beginner:
-        move = this.getRandomMove();
-        break;
-      case AIDifficulty.Intermediate:
-        move = Math.random() < 0.5 ? this.getRandomMove() : this.getBestMove();
-        break;
-      case AIDifficulty.Advanced:
-      case AIDifficulty.Master:
-        move = this.getBestMove();
-        break;
-      default:
-        move = this.getRandomMove();
-    }
-
-    if (!move) {
-      throw new Error('No valid moves available');
-    }
-
-    return this.makeMove(aiPlayerId, move);
+    return this.makeBotMove();
   }
 
   protected getCurrentPlayer(): string | undefined {

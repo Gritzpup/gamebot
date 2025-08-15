@@ -25,7 +25,11 @@ export class TelegramAdapter extends PlatformAdapter {
     message: UIMessage;
     retries: number;
     nextRetryAt: number;
+    createdAt: number;
   }> = new Map();
+  private readonly MAX_QUEUE_SIZE = 100;
+  private readonly MAX_RETRIES = 5;
+  private readonly MAX_QUEUE_AGE = 60000; // 1 minute
 
   constructor() {
     super();
@@ -47,6 +51,37 @@ export class TelegramAdapter extends PlatformAdapter {
   private async processEditQueue(): Promise<void> {
     const now = Date.now();
     
+    // Clean up old entries first
+    for (const [key, item] of this.editQueue.entries()) {
+      // Remove entries that are too old
+      if (now - item.createdAt > this.MAX_QUEUE_AGE) {
+        this.editQueue.delete(key);
+        logger.debug(`Removed stale edit queue entry: ${key}`);
+        continue;
+      }
+      
+      // Remove entries that have exceeded max retries
+      if (item.retries >= this.MAX_RETRIES) {
+        this.editQueue.delete(key);
+        logger.warn(`Removed edit queue entry after max retries: ${key}`);
+        continue;
+      }
+    }
+    
+    // Enforce max queue size
+    if (this.editQueue.size > this.MAX_QUEUE_SIZE) {
+      // Remove oldest entries
+      const sortedEntries = Array.from(this.editQueue.entries())
+        .sort(([, a], [, b]) => a.createdAt - b.createdAt);
+      
+      const entriesToRemove = sortedEntries.slice(0, this.editQueue.size - this.MAX_QUEUE_SIZE);
+      for (const [key] of entriesToRemove) {
+        this.editQueue.delete(key);
+        logger.warn(`Removed edit queue entry due to size limit: ${key}`);
+      }
+    }
+    
+    // Process ready entries
     for (const [key, item] of this.editQueue.entries()) {
       if (now >= item.nextRetryAt) {
         const [channelId, messageId] = key.split(':');
@@ -55,7 +90,19 @@ export class TelegramAdapter extends PlatformAdapter {
         if (messageEditRateLimiter.isAllowed(rateLimitKey)) {
           this.editQueue.delete(key);
           this.editMessage(channelId, messageId, item.message).catch(err => {
-            logger.error('Failed to process queued edit:', err);
+            // If error, re-queue with exponential backoff
+            if (!err.message?.includes('message is not modified')) {
+              const newRetries = item.retries + 1;
+              if (newRetries < this.MAX_RETRIES) {
+                const backoffDelay = Math.min(500 * Math.pow(2, newRetries), 10000);
+                this.editQueue.set(key, {
+                  ...item,
+                  retries: newRetries,
+                  nextRetryAt: now + backoffDelay
+                });
+                logger.debug(`Re-queued edit with backoff ${backoffDelay}ms: ${key}`);
+              }
+            }
           });
         }
       }
@@ -157,10 +204,12 @@ export class TelegramAdapter extends PlatformAdapter {
     if (!messageEditRateLimiter.isAllowed(rateLimitKey)) {
       // Queue the message for later
       const queueKey = `${channelId}:${messageId}`;
+      const now = Date.now();
       this.editQueue.set(queueKey, {
         message,
         retries: 0,
-        nextRetryAt: Date.now() + 500
+        nextRetryAt: now + 500,
+        createdAt: now
       });
       logger.debug('Message edit rate limited, queued for later');
       return;
@@ -212,7 +261,8 @@ export class TelegramAdapter extends PlatformAdapter {
         this.editQueue.set(queueKey, {
           message,
           retries,
-          nextRetryAt: Date.now() + (retryAfter * 1000 * Math.pow(2, Math.min(retries - 1, 5)))
+          nextRetryAt: Date.now() + (retryAfter * 1000 * Math.pow(2, Math.min(retries - 1, 5))),
+          createdAt: existing?.createdAt || Date.now()
         });
         return;
       }
@@ -246,6 +296,14 @@ export class TelegramAdapter extends PlatformAdapter {
     } catch (error) {
       logger.error('Error deleting Telegram message:', error);
       throw error;
+    }
+  }
+
+  async clearEditQueue(channelId: string, messageId: string): Promise<void> {
+    const queueKey = `${channelId}:${messageId}`;
+    if (this.editQueue.has(queueKey)) {
+      this.editQueue.delete(queueKey);
+      logger.debug(`Cleared edit queue for message: ${queueKey}`);
     }
   }
 
@@ -310,16 +368,45 @@ export class TelegramAdapter extends PlatformAdapter {
         return;
       }
       
-      // Parse command
-      const parsed = this.parseCommand(text);
-      if (!parsed) {
-        return;
-      }
-      
       if (!msg.from) {
         return;
       }
       const userId = msg.from.id.toString();
+      
+      // Parse command
+      const parsed = this.parseCommand(text);
+      
+      // If not a command, check if it's a Wordle guess
+      if (!parsed) {
+        // Check if it's a 5-letter word (potential Wordle guess)
+        const cleanText = text.trim().toUpperCase();
+        if (cleanText.length === 5 && /^[A-Z]+$/.test(cleanText)) {
+          // Find if user has an active Wordle game
+          const gameSessionId = await this.findActiveWordleSession(userId, msg.chat.id.toString());
+          if (gameSessionId) {
+            // Create a text input interaction for Wordle
+            const interaction: GameInteraction = {
+              id: msg.message_id.toString(),
+              type: 'text_input',
+              platform: Platform.Telegram,
+              userId,
+              channelId: msg.chat.id.toString(),
+              gameSessionId,
+              messageId: undefined, // Text inputs don't have a specific game message
+              data: { text: cleanText },
+              timestamp: new Date(),
+            };
+            
+            // Update player activity
+            await this.updatePlayerActivity(userId);
+            
+            // Handle the guess
+            await this.handleInteraction(interaction);
+            return;
+          }
+        }
+        return;
+      }
       
       // Check if user is admin
       let isAdmin = false;
@@ -411,6 +498,30 @@ export class TelegramAdapter extends PlatformAdapter {
 
   protected formatUserMention(userId: string): string {
     return `<a href="tg://user?id=${userId}">User</a>`;
+  }
+  
+  private async findActiveWordleSession(userId: string, channelId: string): Promise<string | null> {
+    try {
+      // Get Redis state manager to find active games
+      const redis = (await import('../../services/redis/RedisClient')).RedisClient.getInstance();
+      const stateManager = redis.getStateManager();
+      
+      // Get player's active games
+      const playerGames = await stateManager.getPlayerGames(userId);
+      
+      // Check each game to see if it's a Wordle game
+      for (const sessionId of playerGames) {
+        const gameState = await stateManager.getGameState(sessionId);
+        if (gameState && gameState.gameType === 'wordle' && gameState.channelId === channelId && !gameState.ended) {
+          return sessionId;
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      logger.error('Error finding active Wordle session:', error);
+      return null;
+    }
   }
 
 
