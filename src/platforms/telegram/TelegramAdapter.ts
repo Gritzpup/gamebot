@@ -379,11 +379,20 @@ export class TelegramAdapter extends PlatformAdapter {
       // If not a command, check if it's a Wordle guess
       if (!parsed) {
         // Check if it's a 5-letter word (potential Wordle guess)
-        const cleanText = text.trim().toUpperCase();
-        if (cleanText.length === 5 && /^[A-Z]+$/.test(cleanText)) {
+        // Make text validation more forgiving - remove spaces, punctuation, etc.
+        const cleanText = text.trim().toUpperCase().replace(/[^A-Z]/g, '');
+        logger.info(`[Wordle] Text input received: "${text}" -> cleaned: "${cleanText}" (length: ${cleanText.length})`);
+        
+        if (cleanText.length === 5) {
+          logger.info(`[Wordle] Valid 5-letter word detected: ${cleanText} from user ${userId} in channel ${msg.chat.id}`);
+          
           // Find if user has an active Wordle game
           const gameSessionId = await this.findActiveWordleSession(userId, msg.chat.id.toString());
+          logger.info(`[Wordle] Active session lookup for user ${userId}: ${gameSessionId ? `Found (${gameSessionId})` : 'NOT FOUND'}`);
+          
           if (gameSessionId) {
+            logger.info(`[Wordle] Processing guess "${cleanText}" for session ${gameSessionId}`);
+            
             // Create a text input interaction for Wordle
             const interaction: GameInteraction = {
               id: msg.message_id.toString(),
@@ -403,7 +412,19 @@ export class TelegramAdapter extends PlatformAdapter {
             // Handle the guess
             await this.handleInteraction(interaction);
             return;
+          } else {
+            // No active session found - provide helpful feedback
+            logger.warn(`[Wordle] User ${userId} tried to guess "${cleanText}" but has no active game`);
+            await this.bot.sendMessage(
+              msg.chat.id, 
+              `❌ No active Wordle game found!\n\n👉 Start a new game with: /play wordle\n\nThen type your 5-letter guesses directly in the chat.`,
+              { reply_to_message_id: msg.message_id }
+            );
+            return;
           }
+        } else if (cleanText.length > 0 && cleanText.length < 10 && /^[A-Z]+$/.test(cleanText)) {
+          // User might be trying to play Wordle but word is wrong length
+          logger.debug(`[Wordle] Possible Wordle attempt with wrong length: "${cleanText}" (${cleanText.length} letters)`);
         }
         return;
       }
@@ -508,15 +529,26 @@ export class TelegramAdapter extends PlatformAdapter {
       
       // Get player's active games
       const playerGames = await stateManager.getPlayerGames(userId);
+      logger.info(`[Wordle] Player ${userId} has ${playerGames.length} active games: ${playerGames.join(', ')}`);
       
       // Check each game to see if it's a Wordle game
       for (const sessionId of playerGames) {
         const gameState = await stateManager.getGameState(sessionId);
+        logger.info(`[Wordle] Checking game ${sessionId}:`, {
+          gameType: gameState?.gameType,
+          channelId: gameState?.channelId,
+          ended: gameState?.ended,
+          players: gameState?.players,
+          actualChannelId: channelId
+        });
+        
         if (gameState && gameState.gameType === 'wordle' && gameState.channelId === channelId && !gameState.ended) {
+          logger.info(`[Wordle] Found active Wordle session: ${sessionId}`);
           return sessionId;
         }
       }
       
+      logger.info(`[Wordle] No active Wordle session found for user ${userId} in channel ${channelId}`);
       return null;
     } catch (error) {
       logger.error('Error finding active Wordle session:', error);

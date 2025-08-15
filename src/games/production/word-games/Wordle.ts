@@ -41,6 +41,7 @@ export class Wordle extends BaseGame {
   maxPlayers = 1;
   estimatedDuration = 5; // 5 minutes
   difficulty = GameDifficulty.Medium;
+  acceptsTextInput = true; // Explicitly declare that Wordle accepts text input
   
   private state: WordleState = {
     targetWord: '',
@@ -94,6 +95,14 @@ export class Wordle extends BaseGame {
   async start(): Promise<void> {
     await super.start();
     logger.info('Wordle game started');
+    
+    // Send initial message to clarify how to play
+    if (this.session) {
+      const initialMessage = {
+        content: '📝 **HOW TO PLAY**: Simply type any 5-letter word in this chat and press Enter to make a guess! No buttons needed - just type your word as a regular message.',
+      };
+      // This message will be sent by the session handler
+    }
   }
   
   async processInteraction(interaction: GameInteraction): Promise<MoveResult | null> {
@@ -337,6 +346,11 @@ export class Wordle extends BaseGame {
     content += `║       WORDLE 🟩 🟨        ║\n`;
     content += `╚═══════════════════════════╝\n\n`;
     
+    if (this.state.currentRow === 0 && !this.state.gameOver) {
+      content += `📝 TO PLAY: Type a 5-letter word\n`;
+      content += `   in this chat and press Enter!\n\n`;
+    }
+    
     content += squares + '\n\n';
     
     if (!this.state.gameOver) {
@@ -345,6 +359,12 @@ export class Wordle extends BaseGame {
       if (this.state.hardMode) {
         content += `🔴 HARD MODE\n`;
       }
+      content += `\n`;
+      content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      content += `👇 TYPE YOUR GUESS IN THE CHAT BELOW! 👇\n`;
+      content += `Just type any 5-letter word and press Enter\n`;
+      content += `Examples: CRANE, SLATE, AUDIO\n`;
+      content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
     } else {
       content += this.renderGameOver() + '\n\n';
       content += stats;
@@ -453,21 +473,21 @@ export class Wordle extends BaseGame {
 🎯 **Objective**: Guess the secret 5-letter word in 6 tries or less!
 
 **How to Play**:
-1. Type any 5-letter word to make a guess
-2. After each guess, the color of the tiles will change:
+1. 📝 **TYPE YOUR GUESSES DIRECTLY IN THE CHAT** - no buttons needed!
+2. Just type any 5-letter word in this chat channel and press Enter
+3. After each guess, the color of the tiles will change:
    - 🟩 Green: Letter is in the word and in the correct spot
    - 🟨 Yellow: Letter is in the word but in the wrong spot
    - ⬜ Gray: Letter is not in the word
+
+**Example**: Just type "CRANE" in the chat and send the message!
 
 **Tips**:
 - Start with words that have common vowels (A, E, I, O, U)
 - Use the keyboard display to track which letters you've tried
 - Hard Mode: You must use all revealed hints in subsequent guesses
 
-**Commands**:
-- Type any 5-letter word to guess
-- Click "Hint" button for help (limited uses)
-- Click "New Game" to start over
+**Remember**: This is a text-based game - simply type your guesses as regular chat messages!
 `;
     
     return {

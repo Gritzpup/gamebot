@@ -205,12 +205,22 @@ export class GameEngine extends EventEmitter {
     channelId: string,
     creatorId: string
   ): Promise<GameSession | null> {
+    logger.info(`[GameEngine] Creating game session: type=${gameType}, platform=${platform}, channel=${channelId}, creator=${creatorId}`);
+    
     const gameInfo = this.gameRegistry.getGame(gameType.toLowerCase());
     const GameClass = this.gameRegistry.getGameClass(gameType.toLowerCase());
     
     if (!gameInfo || !GameClass) {
+      logger.debug(`Game not found in registry: ${gameType}`);
       return null;
     }
+    
+    logger.info(`[GameEngine] Found game in registry:`, {
+      gameId: gameInfo.id,
+      gameName: gameInfo.name,
+      requestedType: gameType,
+      normalizedType: gameType.toLowerCase()
+    });
     
     // Check if creator has too many active games
     const playerGameCount = await this.stateManager.getPlayerGameCount(creatorId);
@@ -226,6 +236,12 @@ export class GameEngine extends EventEmitter {
     
     // Create game instance
     const game = new (GameClass as any)();
+    
+    logger.info(`[GameEngine] Created game instance:`, {
+      gameId: game.id,
+      gameName: game.name,
+      gameClass: GameClass.name
+    });
     
     // Create session
     const sessionId = uuidv4();
@@ -249,10 +265,16 @@ export class GameEngine extends EventEmitter {
     await session.addPlayer(creator);
     
     // Store session in cache and Redis
+    logger.debug(`Storing session ${sessionId} in cache and Redis`);
     this.sessionCache.set(sessionId, session);
     await this.stateManager.addActiveSession(sessionId);
     await this.stateManager.addPlayerGame(creatorId, sessionId);
     await this.stateManager.addChannelSession(channelId, sessionId);
+    
+    // Save the initial game state
+    logger.debug(`Saving initial game state for session ${sessionId}`);
+    await this.saveSession(session);
+    logger.debug(`Game session ${sessionId} created and saved successfully`);
     
     // Set up bot move callback to update UI across platforms
     // This will be called by GameSession when bot actually makes a move
@@ -862,6 +884,7 @@ export class GameEngine extends EventEmitter {
   }
 
   private async saveSession(session: GameSession): Promise<void> {
+    logger.debug(`Saving session ${session.getId()} to database`);
     await this.database.saveGameSession(session.toDatabase());
     
     // Save all players to game_players table
@@ -892,10 +915,19 @@ export class GameEngine extends EventEmitter {
       ended: session.isEnded()
     };
     
+    logger.info(`[GameEngine] Saving game state to Redis for session ${session.getId()}:`, {
+      gameType: gameState.gameType,
+      platform: gameState.platform,
+      channelId: gameState.channelId,
+      players: gameState.players
+    });
     const saved = await this.stateManager.saveGameState(session.getId(), gameState);
     if (saved) {
       // Update session version
       (session as any).version = gameState.version;
+      logger.debug(`Successfully saved game state for session ${session.getId()}, version: ${gameState.version}`);
+    } else {
+      logger.error(`Failed to save game state to Redis for session ${session.getId()}`);
     }
   }
 
