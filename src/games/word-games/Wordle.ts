@@ -837,13 +837,14 @@ export class Wordle extends BaseGame {
       if (this.state.versusMode) {
         logger.info(`[Wordle] Rendering versus mode buttons - forPlayer: ${forPlayer}, player1Id: ${this.state.player1Id}`);
         // Only the creator (player1) sees play vs bot and cancel
-        if (forPlayer === this.state.player1Id) {
+        if (forPlayer && this.state.player1Id && forPlayer === this.state.player1Id) {
           components.push({ type: 'button', id: 'play_bot', label: '🤖 Play vs Bot', style: 'primary' });
           components.push({ type: 'button', id: 'cancel_game', label: '❌ Cancel', style: 'danger' });
-        } else {
-          // Other players can join
+        } else if (forPlayer && forPlayer !== this.state.player1Id) {
+          // Other players can join (only if they have a valid player ID)
           components.push({ type: 'button', id: 'join_game', label: '🎮 Join Game', style: 'success' });
         }
+        // If forPlayer is undefined, show no buttons (spectator mode)
       } else {
         // Custom mode
         if (!isCreator) {
