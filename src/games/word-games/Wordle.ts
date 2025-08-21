@@ -349,10 +349,7 @@ export class Wordle extends BaseGame {
         const guess = interaction.data.text.toUpperCase();
         const result = await this.processGuess(interaction.userId, guess);
         
-        // Check if game ended
-        if (result.success && (this.state.won || this.state.gameOver)) {
-          this.state.gameState = WordleGameState.GAME_OVER;
-        }
+        // Game state will be set in processGuess if game ends
         
         return result;
       }
@@ -456,13 +453,25 @@ export class Wordle extends BaseGame {
           this.state.player2Won = true;
         }
         
-        // Check if both players have finished
+        // Immediate win - end game as soon as someone guesses the word
+        if (isPlayer1 && this.state.player1Won) {
+          this.state.gameOver = true;
+          this.state.gameState = WordleGameState.GAME_OVER;
+          return { success: true, gameEnded: true, winner: this.state.player1Id, stateChanged: true };
+        } else if (!isPlayer1 && this.state.player2Won) {
+          this.state.gameOver = true;
+          this.state.gameState = WordleGameState.GAME_OVER;
+          return { success: true, gameEnded: true, winner: this.state.player2Id, stateChanged: true };
+        }
+        
+        // Check if both players have finished (no one won yet)
         const player1Finished = this.state.player1Won || (this.state.player1Guesses?.length || 0) >= this.MAX_GUESSES;
         const player2Finished = this.state.player2Won || (this.state.player2Guesses?.length || 0) >= this.MAX_GUESSES;
         
         if (player1Finished && player2Finished) {
-          // Game over - determine winner
+          // Game over - no winner
           this.state.gameOver = true;
+          this.state.gameState = WordleGameState.GAME_OVER;
           
           if (this.state.player1Won && !this.state.player2Won) {
             return { success: true, gameEnded: true, winner: this.state.player1Id, stateChanged: true };
@@ -552,6 +561,7 @@ export class Wordle extends BaseGame {
     if (guessLower === this.state.targetWord) {
       this.state.won = true;
       this.state.gameOver = true;
+      this.state.gameState = WordleGameState.GAME_OVER;
       return {
         success: true,
         gameEnded: true,
@@ -563,6 +573,7 @@ export class Wordle extends BaseGame {
     // Check loss condition
     if (this.state.currentRow >= this.MAX_GUESSES) {
       this.state.gameOver = true;
+      this.state.gameState = WordleGameState.GAME_OVER;
       return {
         success: true,
         gameEnded: true,
@@ -938,55 +949,81 @@ export class Wordle extends BaseGame {
     // Game over state
     if (this.state.gameState === WordleGameState.GAME_OVER) {
       content = `\`\`\`\n╔═══════════════════════════╗\n`;
-      content += `║       WORDLE 🟩 🟨        ║\n`;
+      content += `║      GAME OVER! 🏁        ║\n`;
       content += `╚═══════════════════════════╝\n\n`;
       
       // Versus mode
       if (this.state.versusMode) {
-        content += `⚔️ VERSUS MODE - GAME OVER\n\n`;
-        content += `The word was: ${this.state.targetWord.toUpperCase()}\n\n`;
+        content += `🔤 The word was: ${this.state.targetWord.toUpperCase()}\n\n`;
+        content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
         
-        // Player 1 board
-        content += `${this.state.player1Name}: ${this.state.player1Won ? '🏆 WON' : '❌ LOST'}\n`;
-        content += this.renderBoardForPlayer(this.state.player1Guesses || [], this.state.player1Won || false) + '\n\n';
-        
-        // Player 2 board
-        content += `${this.state.player2Name}: ${this.state.player2Won ? '🏆 WON' : '❌ LOST'}\n`;
-        content += this.renderBoardForPlayer(this.state.player2Guesses || [], this.state.player2Won || false) + '\n\n';
-        
-        // Determine winner
+        // Determine winner first
+        let winnerSection = '';
         if (this.state.player1Won && this.state.player2Won) {
           const p1Guesses = this.state.player1Guesses?.length || 0;
           const p2Guesses = this.state.player2Guesses?.length || 0;
           if (p1Guesses < p2Guesses) {
-            content += `🎉 ${this.state.player1Name} WINS! (Fewer guesses: ${p1Guesses} vs ${p2Guesses})\n`;
+            winnerSection = `🏆 WINNER: ${this.state.player1Name}\n📊 Won in ${p1Guesses} guesses (vs ${p2Guesses})\n`;
           } else if (p2Guesses < p1Guesses) {
-            content += `🎉 ${this.state.player2Name} WINS! (Fewer guesses: ${p2Guesses} vs ${p1Guesses})\n`;
+            winnerSection = `🏆 WINNER: ${this.state.player2Name}\n📊 Won in ${p2Guesses} guesses (vs ${p1Guesses})\n`;
           } else {
-            content += `🤝 IT'S A TIE! Both solved in ${p1Guesses} guesses!\n`;
+            winnerSection = `🤝 IT'S A TIE!\n📊 Both solved in ${p1Guesses} guesses\n`;
           }
         } else if (this.state.player1Won) {
-          content += `🎉 ${this.state.player1Name} WINS!\n`;
+          const p1Guesses = this.state.player1Guesses?.length || 0;
+          winnerSection = `🏆 WINNER: ${this.state.player1Name}\n📊 Solved in ${p1Guesses} guesses\n`;
         } else if (this.state.player2Won) {
-          content += `🎉 ${this.state.player2Name} WINS!\n`;
+          const p2Guesses = this.state.player2Guesses?.length || 0;
+          winnerSection = `🏆 WINNER: ${this.state.player2Name}\n📊 Solved in ${p2Guesses} guesses\n`;
         } else {
-          content += `😢 Neither player guessed the word!\n`;
+          winnerSection = `😢 NO WINNER\n📊 Neither player guessed the word\n`;
         }
+        
+        content += winnerSection;
+        content += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        
+        // Final scores summary
+        content += `FINAL RESULTS:\n`;
+        content += `${this.state.player1Won ? '✅' : '❌'} ${this.state.player1Name}: ${this.state.player1Guesses?.length || 0}/6 guesses\n`;
+        content += `${this.state.player2Won ? '✅' : '❌'} ${this.state.player2Name}: ${this.state.player2Guesses?.length || 0}/6 guesses\n`;
       }
       // Custom mode
       else if (this.state.customMode) {
-        content += `👤 Word set by: ${this.state.creatorName}\n`;
-        content += `🎯 Guesser: ${this.state.guesserName}\n\n`;
+        content += `🔤 The word was: ${this.state.targetWord.toUpperCase()}\n\n`;
+        content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
         
-        const squares = this.renderBoard();
-        content += squares + '\n\n';
-        content += this.renderGameOver() + '\n\n';
+        if (this.state.won) {
+          const attempts = this.state.currentRow;
+          content += `🏆 WINNER: ${this.state.guesserName}\n`;
+          content += `📊 Solved in ${attempts} guesses!\n\n`;
+        } else {
+          content += `😢 ${this.state.guesserName} didn't guess the word\n\n`;
+        }
+        
+        content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        content += `👤 Word set by: ${this.state.creatorName}\n`;
       }
       // Single player mode
       else {
-        const squares = this.renderBoard();
-        content += squares + '\n\n';
-        content += this.renderGameOver() + '\n\n';
+        content += `🔤 The word was: ${this.state.targetWord.toUpperCase()}\n\n`;
+        content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        
+        if (this.state.won) {
+          const attempts = this.state.currentRow;
+          const messages = [
+            'Genius!',
+            'Magnificent!',
+            'Impressive!',
+            'Splendid!',
+            'Great!',
+            'Phew!',
+          ];
+          content += `🎉 ${messages[attempts - 1]}\n`;
+          content += `📊 Solved in ${attempts}/6 guesses!\n`;
+        } else {
+          content += `😢 Better luck next time!\n`;
+          content += `📊 Used all 6 guesses\n`;
+        }
       }
       
       content += `\`\`\``;
