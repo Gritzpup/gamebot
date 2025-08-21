@@ -769,12 +769,9 @@ export class Wordle extends BaseGame {
           content += `Share this game with a friend\n`;
           content += `so they can try to guess your word!\n`;
         } else {
-          content += `Anyone can join!\n\n`;
-          content += `Click JOIN to start the challenge!\n`;
+          content += `${this.state.creatorName} has set a word!\n\n`;
+          content += `Click JOIN to start guessing!\n`;
         }
-      } else {
-        content += `${this.state.creatorName} has set a word!\n\n`;
-        content += `Click JOIN to start guessing!\n`;
       }
       content += `\`\`\``;
       
