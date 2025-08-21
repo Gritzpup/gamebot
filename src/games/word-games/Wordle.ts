@@ -363,16 +363,6 @@ export class Wordle extends BaseGame {
       if (interaction.type === 'button_click') {
         const buttonId = interaction.data?.id;
         
-        if (buttonId === 'new_game') {
-          // Reset and start new game
-          await this.initialize(this.session);
-          await this.start();
-          // Set the player who clicked new game as the creator for mode selection
-          this.state.creatorId = interaction.userId;
-          this.state.creatorName = this.getPlayerName(interaction.userId);
-          logger.info(`[Wordle] New game started by ${this.state.creatorName} (${this.state.creatorId})`);
-          return { success: true, gameEnded: false, stateChanged: true };
-        }
         
         if (buttonId === 'share') {
           // Share functionality would be handled by the platform
@@ -1025,10 +1015,7 @@ export class Wordle extends BaseGame {
     } catch (error) {
       logger.error(`[Wordle] Error in renderState:`, error);
       return { 
-        content: `\`\`\`\nError rendering game state.\nPlease try restarting the game.\n\`\`\``,
-        components: [
-          { type: 'button', id: 'new_game', label: '🔄 Restart', style: 'danger' }
-        ]
+        content: `\`\`\`\nError rendering game state.\nPlease start a new game.\n\`\`\``
       };
     }
   }
@@ -1255,8 +1242,7 @@ export class Wordle extends BaseGame {
     const components: UIComponent[] = [];
     
     components.push(
-      { type: 'button', id: 'share', label: '📤 Share', style: 'primary' },
-      { type: 'button', id: 'new_game', label: '🔄 New Game', style: 'secondary' }
+      { type: 'button', id: 'share', label: '📤 Share', style: 'primary' }
     );
     
     return components;
@@ -1277,6 +1263,10 @@ export class Wordle extends BaseGame {
   async end(reason: GameEndReason): Promise<void> {
     this.state.gameOver = true;
     await super.end(reason);
+  }
+  
+  isGameOver(): boolean {
+    return this.state.gameState === WordleGameState.GAME_OVER || this.state.gameOver;
   }
   
   getCurrentState(): GameStateSnapshot {
