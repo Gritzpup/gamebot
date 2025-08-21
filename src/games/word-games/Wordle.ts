@@ -25,7 +25,7 @@ interface WordleState {
   targetWord: string;
   guesses: string[];
   currentRow: number;
-  gameMode: 'daily' | 'random' | 'custom';
+  gameMode: 'daily' | 'random' | 'custom' | 'versus';
   dailyIndex?: number;
   keyboard: {
     [letter: string]: 'correct' | 'present' | 'absent' | 'unused';
@@ -41,6 +41,17 @@ interface WordleState {
   guesserId?: string;
   guesserName?: string;
   customMode: boolean;
+  // For versus mode (two-player random word)
+  versusMode?: boolean;
+  player1Id?: string;
+  player1Name?: string;
+  player1Guesses?: string[];
+  player1Won?: boolean;
+  player2Id?: string;
+  player2Name?: string;
+  player2Guesses?: string[];
+  player2Won?: boolean;
+  currentGuesser?: string; // Track whose turn it is in versus mode
 }
 
 interface LetterResult {
@@ -105,6 +116,16 @@ export class Wordle extends BaseGame {
       creatorName: undefined,
       guesserId: undefined,
       guesserName: undefined,
+      versusMode: false,
+      player1Id: undefined,
+      player1Name: undefined,
+      player1Guesses: undefined,
+      player1Won: false,
+      player2Id: undefined,
+      player2Name: undefined,
+      player2Guesses: undefined,
+      player2Won: false,
+      currentGuesser: undefined,
     } as WordleState;
     
     // Initialize keyboard
@@ -184,6 +205,19 @@ export class Wordle extends BaseGame {
             logger.info(`[Wordle] Daily mode selected - Word: ${this.state.targetWord}`);
             return { success: true, stateChanged: true };
           }
+          
+          if (buttonId === 'mode_versus') {
+            this.state.gameMode = 'versus';
+            this.state.customMode = false;
+            this.state.versusMode = true;
+            this.state.player1Id = this.state.creatorId;
+            this.state.player1Name = this.state.creatorName;
+            this.state.player1Guesses = [];
+            this.state.player1Won = false;
+            this.state.gameState = WordleGameState.WAITING_FOR_PLAYER;
+            logger.info(`[Wordle] Versus mode selected - Waiting for second player`);
+            return { success: true, stateChanged: true };
+          }
         }
         return null;
       }
@@ -222,21 +256,49 @@ export class Wordle extends BaseGame {
       return null;
     }
     
-    // Handle waiting for player (custom mode)
+    // Handle waiting for player (custom mode or versus mode)
     if (this.state.gameState === WordleGameState.WAITING_FOR_PLAYER) {
       if (interaction.type === 'button_click' && interaction.data?.id === 'join_game') {
-        // Can't be the word setter
-        if (interaction.userId === this.state.creatorId) {
-          return { success: false, message: "You can't guess your own word!", stateChanged: false };
+        // In versus mode
+        if (this.state.versusMode) {
+          // Can't join your own versus game
+          if (interaction.userId === this.state.player1Id) {
+            return { success: false, message: "You can't play against yourself!", stateChanged: false };
+          }
+          
+          // Set player 2
+          this.state.player2Id = interaction.userId;
+          this.state.player2Name = this.getPlayerName(interaction.userId);
+          this.state.player2Guesses = [];
+          this.state.player2Won = false;
+          
+          // Generate random word for versus mode
+          this.selectTargetWord();
+          
+          // Start with player 1's turn
+          this.state.currentGuesser = this.state.player1Id;
+          this.state.gameState = WordleGameState.PLAYING;
+          this.state.startTime = Date.now();
+          
+          logger.info(`[Wordle] Versus mode started - ${this.state.player1Name} vs ${this.state.player2Name}, Word: ${this.state.targetWord}`);
+          return { success: true, stateChanged: true };
         }
         
-        // Set the guesser
-        this.state.guesserId = interaction.userId;
-        this.state.guesserName = this.getPlayerName(interaction.userId);
-        this.state.gameState = WordleGameState.PLAYING;
-        this.state.startTime = Date.now();
-        
-        return { success: true, stateChanged: true };
+        // In custom mode
+        else {
+          // Can't be the word setter
+          if (interaction.userId === this.state.creatorId) {
+            return { success: false, message: "You can't guess your own word!", stateChanged: false };
+          }
+          
+          // Set the guesser
+          this.state.guesserId = interaction.userId;
+          this.state.guesserName = this.getPlayerName(interaction.userId);
+          this.state.gameState = WordleGameState.PLAYING;
+          this.state.startTime = Date.now();
+          
+          return { success: true, stateChanged: true };
+        }
       }
       
       if (interaction.type === 'button_click' && interaction.data?.id === 'cancel_game') {
@@ -307,8 +369,20 @@ export class Wordle extends BaseGame {
       return { success: false, message: 'Game is not in playing state!', stateChanged: false };
     }
     
+    // In versus mode, check if it's the player's turn
+    if (this.state.versusMode) {
+      if (playerId !== this.state.currentGuesser) {
+        const currentPlayerName = playerId === this.state.player1Id ? this.state.player1Name : this.state.player2Name;
+        const otherPlayerName = this.state.currentGuesser === this.state.player1Id ? this.state.player1Name : this.state.player2Name;
+        return { success: false, message: `It's ${otherPlayerName}'s turn!`, stateChanged: false };
+      }
+    }
+    // In single player mode, only the creator can make guesses
+    else if (!this.state.customMode && playerId !== this.state.creatorId) {
+      return { success: false, message: 'This is not your game! Start your own with /play wordle', stateChanged: false };
+    }
     // In custom mode, only the guesser can make guesses
-    if (this.state.customMode && playerId !== this.state.guesserId) {
+    else if (this.state.customMode && playerId !== this.state.guesserId) {
       return { success: false, message: 'Only the designated guesser can make guesses!', stateChanged: false };
     }
     
@@ -338,7 +412,98 @@ export class Wordle extends BaseGame {
       }
     }
     
-    // Process the guess
+    // Process the guess for versus mode
+    if (this.state.versusMode) {
+      const isPlayer1 = playerId === this.state.player1Id;
+      
+      // Add guess to the appropriate player's list
+      if (isPlayer1) {
+        if (!this.state.player1Guesses) this.state.player1Guesses = [];
+        this.state.player1Guesses.push(guessLower);
+      } else {
+        if (!this.state.player2Guesses) this.state.player2Guesses = [];
+        this.state.player2Guesses.push(guessLower);
+      }
+      
+      // Check if player won
+      if (guessLower === this.state.targetWord) {
+        if (isPlayer1) {
+          this.state.player1Won = true;
+        } else {
+          this.state.player2Won = true;
+        }
+        
+        // Check if both players have finished
+        const player1Finished = this.state.player1Won || (this.state.player1Guesses?.length || 0) >= this.MAX_GUESSES;
+        const player2Finished = this.state.player2Won || (this.state.player2Guesses?.length || 0) >= this.MAX_GUESSES;
+        
+        if (player1Finished && player2Finished) {
+          // Game over - determine winner
+          this.state.gameOver = true;
+          
+          if (this.state.player1Won && !this.state.player2Won) {
+            return { success: true, gameEnded: true, winner: this.state.player1Id, stateChanged: true };
+          } else if (!this.state.player1Won && this.state.player2Won) {
+            return { success: true, gameEnded: true, winner: this.state.player2Id, stateChanged: true };
+          } else if (this.state.player1Won && this.state.player2Won) {
+            // Both won - check who won in fewer guesses
+            const p1Guesses = this.state.player1Guesses?.length || 0;
+            const p2Guesses = this.state.player2Guesses?.length || 0;
+            if (p1Guesses < p2Guesses) {
+              return { success: true, gameEnded: true, winner: this.state.player1Id, stateChanged: true };
+            } else if (p2Guesses < p1Guesses) {
+              return { success: true, gameEnded: true, winner: this.state.player2Id, stateChanged: true };
+            } else {
+              return { success: true, gameEnded: true, isDraw: true, stateChanged: true };
+            }
+          } else {
+            // Neither won
+            return { success: true, gameEnded: true, isDraw: true, stateChanged: true };
+          }
+        } else {
+          // Switch turns if current player hasn't won and hasn't used all guesses
+          if (!((isPlayer1 && this.state.player1Won) || (!isPlayer1 && this.state.player2Won))) {
+            const currentPlayerGuesses = isPlayer1 ? this.state.player1Guesses?.length || 0 : this.state.player2Guesses?.length || 0;
+            if (currentPlayerGuesses < this.MAX_GUESSES) {
+              this.state.currentGuesser = isPlayer1 ? this.state.player2Id : this.state.player1Id;
+            }
+          }
+          
+          return { success: true, gameEnded: false, stateChanged: true };
+        }
+      }
+      
+      // Check if player used all guesses
+      const currentPlayerGuesses = isPlayer1 ? this.state.player1Guesses?.length || 0 : this.state.player2Guesses?.length || 0;
+      if (currentPlayerGuesses >= this.MAX_GUESSES) {
+        // Switch to other player if they haven't finished
+        const otherPlayerFinished = isPlayer1 
+          ? (this.state.player2Won || (this.state.player2Guesses?.length || 0) >= this.MAX_GUESSES)
+          : (this.state.player1Won || (this.state.player1Guesses?.length || 0) >= this.MAX_GUESSES);
+          
+        if (!otherPlayerFinished) {
+          this.state.currentGuesser = isPlayer1 ? this.state.player2Id : this.state.player1Id;
+          return { success: true, gameEnded: false, stateChanged: true };
+        } else {
+          // Both players finished - game over
+          this.state.gameOver = true;
+          
+          if (this.state.player1Won && !this.state.player2Won) {
+            return { success: true, gameEnded: true, winner: this.state.player1Id, stateChanged: true };
+          } else if (!this.state.player1Won && this.state.player2Won) {
+            return { success: true, gameEnded: true, winner: this.state.player2Id, stateChanged: true };
+          } else {
+            return { success: true, gameEnded: true, isDraw: true, stateChanged: true };
+          }
+        }
+      }
+      
+      // Normal turn switch
+      this.state.currentGuesser = isPlayer1 ? this.state.player2Id : this.state.player1Id;
+      return { success: true, gameEnded: false, stateChanged: true };
+    }
+    
+    // Regular single-player or custom mode processing
     this.state.guesses.push(guessLower);
     this.state.currentRow++;
     
@@ -530,6 +695,8 @@ export class Wordle extends BaseGame {
       content += `   Guess a random 5-letter word\n\n`;
       content += `👥 CUSTOM WORD - Challenge a friend!\n`;
       content += `   Set a word for someone else to guess\n\n`;
+      content += `⚔️ VERSUS MODE - Compete with a friend!\n`;
+      content += `   Both guess the same random word\n\n`;
       content += `📅 DAILY CHALLENGE - Today's word\n`;
       content += `   Everyone gets the same word\n`;
       content += `\`\`\``;
@@ -537,6 +704,7 @@ export class Wordle extends BaseGame {
       components = [
         { type: 'button', id: 'mode_single', label: '🎲 Single Player', style: 'primary' },
         { type: 'button', id: 'mode_custom', label: '👥 Custom Word', style: 'success' },
+        { type: 'button', id: 'mode_versus', label: '⚔️ Versus Mode', style: 'danger' },
         { type: 'button', id: 'mode_daily', label: '📅 Daily Challenge', style: 'secondary' },
       ];
       
@@ -576,19 +744,34 @@ export class Wordle extends BaseGame {
       return { content, components };
     }
     
-    // Waiting for player state (custom mode)
+    // Waiting for player state (custom mode or versus mode)
     if (this.state.gameState === WordleGameState.WAITING_FOR_PLAYER) {
-      const isCreator = forPlayer === this.state.creatorId;
+      const isCreator = forPlayer === this.state.creatorId || forPlayer === this.state.player1Id;
       
-      content = `\`\`\`\n╔═══════════════════════════╗\n`;
-      content += `║   WORDLE - CUSTOM MODE    ║\n`;
-      content += `╚═══════════════════════════╝\n\n`;
-      content += `✅ Word has been set!\n\n`;
-      
-      if (isCreator) {
-        content += `Waiting for someone to join...\n\n`;
-        content += `Share this game with a friend\n`;
-        content += `so they can try to guess your word!\n`;
+      if (this.state.versusMode) {
+        // Versus mode
+        content = `\`\`\`\n╔═══════════════════════════╗\n`;
+        content += `║   WORDLE - VERSUS MODE    ║\n`;
+        content += `╚═══════════════════════════╝\n\n`;
+        content += `⚔️ ${this.state.player1Name} is ready!\n\n`;
+        content += `Waiting for an opponent...\n\n`;
+        content += `First to guess the word wins!\n`;
+        content += `Or whoever guesses in fewer tries.\n`;
+      } else {
+        // Custom mode
+        content = `\`\`\`\n╔═══════════════════════════╗\n`;
+        content += `║   WORDLE - CUSTOM MODE    ║\n`;
+        content += `╚═══════════════════════════╝\n\n`;
+        content += `✅ Word has been set!\n\n`;
+        
+        if (isCreator) {
+          content += `Waiting for someone to join...\n\n`;
+          content += `Share this game with a friend\n`;
+          content += `so they can try to guess your word!\n`;
+        } else {
+          content += `Anyone can join!\n\n`;
+          content += `Click JOIN to start the challenge!\n`;
+        }
       } else {
         content += `${this.state.creatorName} has set a word!\n\n`;
         content += `Click JOIN to start guessing!\n`;
@@ -608,15 +791,37 @@ export class Wordle extends BaseGame {
     
     // Playing state
     if (this.state.gameState === WordleGameState.PLAYING) {
-      const squares = this.renderBoard();
-      const keyboard = this.renderKeyboard();
-      
       content = `\`\`\`\n╔═══════════════════════════╗\n`;
       content += `║       WORDLE 🟩 🟨        ║\n`;
       content += `╚═══════════════════════════╝\n\n`;
       
-      // Show who's playing in custom mode
-      if (this.state.customMode) {
+      // Versus mode
+      if (this.state.versusMode) {
+        content += `⚔️ VERSUS MODE - ${this.state.player1Name} vs ${this.state.player2Name}\n\n`;
+        
+        // Show whose turn it is
+        const currentPlayerName = this.state.currentGuesser === this.state.player1Id ? this.state.player1Name : this.state.player2Name;
+        content += `🎯 Current turn: ${currentPlayerName}\n\n`;
+        
+        // Player 1 board
+        content += `${this.state.player1Name}:\n`;
+        content += this.renderBoardForPlayer(this.state.player1Guesses || [], this.state.player1Won || false) + '\n\n';
+        
+        // Player 2 board
+        content += `${this.state.player2Name}:\n`;
+        content += this.renderBoardForPlayer(this.state.player2Guesses || [], this.state.player2Won || false) + '\n\n';
+        
+        // Show instructions only to the current player
+        if (forPlayer === this.state.currentGuesser) {
+          content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+          content += `👇 IT'S YOUR TURN! TYPE YOUR GUESS! 👇\n`;
+          content += `Just type any 5-letter word and press Enter\n`;
+          content += `Examples: CRANE, SLATE, AUDIO\n`;
+          content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        }
+      }
+      // Custom mode
+      else if (this.state.customMode) {
         const isGuesser = forPlayer === this.state.guesserId;
         const isCreator = forPlayer === this.state.creatorId;
         
@@ -626,26 +831,54 @@ export class Wordle extends BaseGame {
         if (!isGuesser && !isCreator) {
           content += `(Spectating)\n\n`;
         }
+        
+        if (this.state.currentRow === 0 && !this.state.gameOver) {
+          // Only show input instructions to the guesser in custom mode
+          if (forPlayer === this.state.guesserId) {
+            content += `📝 TO PLAY: Type a 5-letter word\n`;
+            content += `   in this chat and press Enter!\n\n`;
+          }
+        }
+        
+        const squares = this.renderBoard();
+        const keyboard = this.renderKeyboard();
+        
+        content += squares + '\n\n';
+        content += keyboard + '\n\n';
+        content += `Attempts: ${this.state.currentRow}/${this.MAX_GUESSES}\n`;
+        
+        if (this.state.hardMode) {
+          content += `🔴 HARD MODE\n`;
+        }
+        
+        // Only show guess instructions to the active player
+        if (forPlayer === this.state.guesserId) {
+          content += `\n`;
+          content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+          content += `👇 TYPE YOUR GUESS IN THE CHAT BELOW! 👇\n`;
+          content += `Just type any 5-letter word and press Enter\n`;
+          content += `Examples: CRANE, SLATE, AUDIO\n`;
+          content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        }
       }
-      
-      if (this.state.currentRow === 0 && !this.state.gameOver) {
-        // Only show input instructions to the guesser in custom mode
-        if (!this.state.customMode || forPlayer === this.state.guesserId) {
+      // Single player mode
+      else {
+        if (this.state.currentRow === 0 && !this.state.gameOver) {
           content += `📝 TO PLAY: Type a 5-letter word\n`;
           content += `   in this chat and press Enter!\n\n`;
         }
-      }
-      
-      content += squares + '\n\n';
-      content += keyboard + '\n\n';
-      content += `Attempts: ${this.state.currentRow}/${this.MAX_GUESSES}\n`;
-      
-      if (this.state.hardMode) {
-        content += `🔴 HARD MODE\n`;
-      }
-      
-      // Only show guess instructions to the active player
-      if (!this.state.customMode || forPlayer === this.state.guesserId) {
+        
+        const squares = this.renderBoard();
+        const keyboard = this.renderKeyboard();
+        
+        content += squares + '\n\n';
+        content += keyboard + '\n\n';
+        content += `Attempts: ${this.state.currentRow}/${this.MAX_GUESSES}\n`;
+        
+        if (this.state.hardMode) {
+          content += `🔴 HARD MODE\n`;
+        }
+        
         content += `\n`;
         content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
         content += `👇 TYPE YOUR GUESS IN THE CHAT BELOW! 👇\n`;
@@ -662,22 +895,58 @@ export class Wordle extends BaseGame {
     
     // Game over state
     if (this.state.gameState === WordleGameState.GAME_OVER) {
-      const squares = this.renderBoard();
-      const stats = this.renderStats();
-      
       content = `\`\`\`\n╔═══════════════════════════╗\n`;
       content += `║       WORDLE 🟩 🟨        ║\n`;
       content += `╚═══════════════════════════╝\n\n`;
       
-      // Show who played in custom mode
-      if (this.state.customMode) {
+      // Versus mode
+      if (this.state.versusMode) {
+        content += `⚔️ VERSUS MODE - GAME OVER\n\n`;
+        content += `The word was: ${this.state.targetWord.toUpperCase()}\n\n`;
+        
+        // Player 1 board
+        content += `${this.state.player1Name}: ${this.state.player1Won ? '🏆 WON' : '❌ LOST'}\n`;
+        content += this.renderBoardForPlayer(this.state.player1Guesses || [], this.state.player1Won || false) + '\n\n';
+        
+        // Player 2 board
+        content += `${this.state.player2Name}: ${this.state.player2Won ? '🏆 WON' : '❌ LOST'}\n`;
+        content += this.renderBoardForPlayer(this.state.player2Guesses || [], this.state.player2Won || false) + '\n\n';
+        
+        // Determine winner
+        if (this.state.player1Won && this.state.player2Won) {
+          const p1Guesses = this.state.player1Guesses?.length || 0;
+          const p2Guesses = this.state.player2Guesses?.length || 0;
+          if (p1Guesses < p2Guesses) {
+            content += `🎉 ${this.state.player1Name} WINS! (Fewer guesses: ${p1Guesses} vs ${p2Guesses})\n`;
+          } else if (p2Guesses < p1Guesses) {
+            content += `🎉 ${this.state.player2Name} WINS! (Fewer guesses: ${p2Guesses} vs ${p1Guesses})\n`;
+          } else {
+            content += `🤝 IT'S A TIE! Both solved in ${p1Guesses} guesses!\n`;
+          }
+        } else if (this.state.player1Won) {
+          content += `🎉 ${this.state.player1Name} WINS!\n`;
+        } else if (this.state.player2Won) {
+          content += `🎉 ${this.state.player2Name} WINS!\n`;
+        } else {
+          content += `😢 Neither player guessed the word!\n`;
+        }
+      }
+      // Custom mode
+      else if (this.state.customMode) {
         content += `👤 Word set by: ${this.state.creatorName}\n`;
         content += `🎯 Guesser: ${this.state.guesserName}\n\n`;
+        
+        const squares = this.renderBoard();
+        content += squares + '\n\n';
+        content += this.renderGameOver() + '\n\n';
+      }
+      // Single player mode
+      else {
+        const squares = this.renderBoard();
+        content += squares + '\n\n';
+        content += this.renderGameOver() + '\n\n';
       }
       
-      content += squares + '\n\n';
-      content += this.renderGameOver() + '\n\n';
-      content += stats;
       content += `\`\`\``;
       
       components = this.createGameOverButtons();
@@ -727,6 +996,42 @@ export class Wordle extends BaseGame {
     for (let i = this.state.currentRow; i < this.MAX_GUESSES; i++) {
       board += '  _  _  _  _  _\n';
       board += ' ⬜ ⬜ ⬜ ⬜ ⬜\n\n';
+    }
+    
+    return board.trim();
+  }
+  
+  private renderBoardForPlayer(guesses: string[], hasWon: boolean): string {
+    let board = '';
+    
+    // Render completed guesses
+    for (let i = 0; i < guesses.length; i++) {
+      const guess = guesses[i];
+      const results = this.getGuessResults(guess);
+      
+      // Letters row
+      board += '  ';
+      for (const letter of guess) {
+        board += letter.toUpperCase() + '  ';
+      }
+      board += '\n';
+      
+      // Emoji row
+      board += ' ';
+      for (const result of results) {
+        if (result.status === 'correct') board += '🟩 ';
+        else if (result.status === 'present') board += '🟨 ';
+        else board += '⬜ ';
+      }
+      board += '\n\n';
+    }
+    
+    // Render empty rows if player hasn't finished
+    if (!hasWon && guesses.length < this.MAX_GUESSES) {
+      for (let i = guesses.length; i < this.MAX_GUESSES; i++) {
+        board += '  _  _  _  _  _\n';
+        board += ' ⬜ ⬜ ⬜ ⬜ ⬜\n\n';
+      }
     }
     
     return board.trim();
