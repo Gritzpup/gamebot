@@ -502,7 +502,9 @@ export class Wordle extends BaseGame {
           
           // Trigger bot move if it's now bot's turn
           if (this.state.player2IsBot && this.state.currentGuesser === 'bot') {
-            setTimeout(() => this.makeBotMove(), 100);
+            this.makeBotMove().catch(err => {
+              logger.error(`[Wordle] Error in bot move after max guesses:`, err);
+            });
           }
           
           return { success: true, gameEnded: false, stateChanged: true };
@@ -525,7 +527,10 @@ export class Wordle extends BaseGame {
       
       // Trigger bot move if it's now bot's turn
       if (this.state.player2IsBot && this.state.currentGuesser === 'bot') {
-        setTimeout(() => this.makeBotMove(), 100);
+        // Use a promise to handle the async bot move
+        this.makeBotMove().catch(err => {
+          logger.error(`[Wordle] Error in bot move:`, err);
+        });
       }
       
       return { success: true, gameEnded: false, stateChanged: true };
@@ -781,19 +786,7 @@ export class Wordle extends BaseGame {
         const waitTime = Date.now() - (this.state.waitingStartTime || 0);
         const timeRemaining = Math.max(0, 10 - Math.floor(waitTime / 1000));
         
-        // Auto-start bot game after 10 seconds
-        if (waitTime > 10000 && !this.state.player2Id) {
-          this.state.player2Id = 'bot';
-          this.state.player2Name = '🤖 WordleBot';
-          this.state.player2IsBot = true;
-          this.state.player2Guesses = [];
-          this.state.player2Won = false;
-          this.selectTargetWord();
-          this.state.currentGuesser = this.state.player1Id;
-          this.state.gameState = WordleGameState.PLAYING;
-          this.state.startTime = Date.now();
-          logger.info(`[Wordle] Auto-starting versus mode with bot - Word: ${this.state.targetWord}`);
-        }
+        // Don't auto-start in renderState - this should be handled by user interaction
         
         // Versus mode
         content = `\`\`\`\n╔═══════════════════════════╗\n`;
@@ -1000,14 +993,7 @@ export class Wordle extends BaseGame {
       return { content, components };
     }
     
-    // Trigger bot move if it's bot's turn
-    if (this.state.gameState === WordleGameState.PLAYING && 
-        this.state.versusMode && 
-        this.state.player2IsBot && 
-        this.state.currentGuesser === 'bot') {
-      // Use setTimeout to avoid blocking the render
-      setTimeout(() => this.makeBotMove(), 100);
-    }
+    // Note: Bot moves are now triggered after human moves in processGuess
     
     // Fallback
     return { content: 'Game state error' };
@@ -1330,74 +1316,88 @@ export class Wordle extends BaseGame {
       return startWords[Math.floor(Math.random() * startWords.length)];
     }
     
-    // Build constraints from previous guesses
-    const correctLetters: { [pos: number]: string } = {};
-    const presentLetters: Set<string> = new Set();
-    const absentLetters: Set<string> = new Set();
-    const wrongPositions: { [letter: string]: Set<number> } = {};
+    // If we've already made 5 guesses, just try any valid word
+    if (botGuesses.length >= 5) {
+      const remainingWords = this.allowed.filter(word => !botGuesses.includes(word));
+      if (remainingWords.length > 0) {
+        return remainingWords[Math.floor(Math.random() * remainingWords.length)];
+      }
+    }
     
-    // Analyze all bot's previous guesses
-    for (const guess of botGuesses) {
-      const results = this.getGuessResults(guess);
-      for (let i = 0; i < results.length; i++) {
-        const letter = guess[i];
-        if (results[i].status === 'correct') {
-          correctLetters[i] = letter;
-        } else if (results[i].status === 'present') {
-          presentLetters.add(letter);
-          if (!wrongPositions[letter]) wrongPositions[letter] = new Set();
-          wrongPositions[letter].add(i);
-        } else {
-          // Only mark as absent if not already found as correct/present
-          if (!presentLetters.has(letter) && !Object.values(correctLetters).includes(letter)) {
-            absentLetters.add(letter);
-          }
+    // Simplified constraints - just track which letters must be in specific positions
+    const mustBeAt: { [pos: number]: string } = {};
+    const mustInclude: Set<string> = new Set();
+    const cannotInclude: Set<string> = new Set();
+    
+    // Get the most recent guess results only (simpler logic)
+    const lastGuess = botGuesses[botGuesses.length - 1];
+    const results = this.getGuessResults(lastGuess);
+    
+    for (let i = 0; i < results.length; i++) {
+      const letter = lastGuess[i];
+      if (results[i].status === 'correct') {
+        mustBeAt[i] = letter;
+      } else if (results[i].status === 'present') {
+        mustInclude.add(letter);
+      } else if (results[i].status === 'absent') {
+        // Only exclude if it's not already known to be in the word
+        if (!mustInclude.has(letter) && !Object.values(mustBeAt).includes(letter)) {
+          cannotInclude.add(letter);
         }
       }
     }
     
+    logger.info(`[Wordle] Bot constraints - mustBeAt: ${JSON.stringify(mustBeAt)}, mustInclude: ${Array.from(mustInclude)}, cannotInclude: ${Array.from(cannotInclude)}`);
+    
     // Find valid words that match constraints
     const validWords = this.allowed.filter(word => {
-      // Check correct letters
-      for (const [pos, letter] of Object.entries(correctLetters)) {
+      // Skip already guessed words
+      if (botGuesses.includes(word)) return false;
+      
+      // Check letters that must be in specific positions
+      for (const [pos, letter] of Object.entries(mustBeAt)) {
         if (word[Number(pos)] !== letter) return false;
       }
       
-      // Check present letters (must be in word but not in wrong positions)
-      for (const letter of presentLetters) {
+      // Check letters that must be included (but not where we last tried them)
+      for (const letter of mustInclude) {
         if (!word.includes(letter)) return false;
-        const positions = wrongPositions[letter];
-        if (positions) {
-          for (const pos of positions) {
-            if (word[pos] === letter) return false;
-          }
-        }
       }
       
-      // Check absent letters
-      for (const letter of absentLetters) {
+      // Check letters that cannot be in the word
+      for (const letter of cannotInclude) {
         if (word.includes(letter)) return false;
       }
       
       return true;
     });
     
+    logger.info(`[Wordle] Bot found ${validWords.length} valid words`);
+    
     // Choose from valid words (prefer common words/answers)
     if (validWords.length > 0) {
       // Prefer words that are in the answers list
       const answerWords = validWords.filter(w => this.answers.includes(w));
       if (answerWords.length > 0) {
-        return answerWords[Math.floor(Math.random() * Math.min(3, answerWords.length))];
+        const chosen = answerWords[Math.floor(Math.random() * Math.min(3, answerWords.length))];
+        logger.info(`[Wordle] Bot choosing from ${answerWords.length} answer words: ${chosen}`);
+        return chosen;
       }
-      return validWords[Math.floor(Math.random() * Math.min(5, validWords.length))];
+      const chosen = validWords[Math.floor(Math.random() * Math.min(5, validWords.length))];
+      logger.info(`[Wordle] Bot choosing from valid words: ${chosen}`);
+      return chosen;
     }
     
     // Fallback - shouldn't happen with valid game state
+    logger.warn(`[Wordle] Bot using fallback - no valid words found!`);
     return this.allowed[Math.floor(Math.random() * this.allowed.length)];
   }
   
   private async makeBotMove(): Promise<void> {
+    logger.info(`[Wordle] makeBotMove called - player2IsBot: ${this.state.player2IsBot}, currentGuesser: ${this.state.currentGuesser}, gameOver: ${this.state.gameOver}`);
+    
     if (!this.state.player2IsBot || this.state.currentGuesser !== 'bot' || this.state.gameOver) {
+      logger.info(`[Wordle] Bot move skipped - conditions not met`);
       return;
     }
     
@@ -1409,10 +1409,14 @@ export class Wordle extends BaseGame {
     
     // Process the bot's guess
     const result = this.processGuess('bot', botGuess);
+    logger.info(`[Wordle] Bot guess result: ${JSON.stringify(result)}`);
     
     // Check if game ended
     if (result.success && (this.state.player2Won || this.state.gameOver)) {
       this.state.gameState = WordleGameState.GAME_OVER;
     }
+    
+    // The state should automatically update when processGuess is called
+    // No need to manually trigger update
   }
 }
