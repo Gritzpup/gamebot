@@ -131,6 +131,7 @@ export class Wordle extends BaseGame {
       currentGuesser: undefined,
       waitingStartTime: undefined,
       player2IsBot: false,
+      processingBotMove: false,
     } as WordleState;
     
     // Initialize keyboard
@@ -274,6 +275,8 @@ export class Wordle extends BaseGame {
           this.state.player2Name = this.getPlayerName(interaction.userId);
           this.state.player2Guesses = [];
           this.state.player2Won = false;
+          this.state.player2IsBot = false;
+          this.state.processingBotMove = false;
           
           // Log for debugging
           logger.info(`[Wordle] Player 2 joined - ID: ${interaction.userId}, Name: ${this.state.player2Name}`);
@@ -321,6 +324,7 @@ export class Wordle extends BaseGame {
           this.state.player2IsBot = true;
           this.state.player2Guesses = [];
           this.state.player2Won = false;
+          this.state.processingBotMove = false;
           this.selectTargetWord();
           this.state.currentGuesser = this.state.player1Id;
           this.state.gameState = WordleGameState.PLAYING;
@@ -437,9 +441,11 @@ export class Wordle extends BaseGame {
       if (isPlayer1) {
         if (!this.state.player1Guesses) this.state.player1Guesses = [];
         this.state.player1Guesses.push(guessLower);
+        logger.info(`[Wordle] Added guess "${guessLower}" to player1. Total guesses: ${this.state.player1Guesses.length}`);
       } else {
         if (!this.state.player2Guesses) this.state.player2Guesses = [];
         this.state.player2Guesses.push(guessLower);
+        logger.info(`[Wordle] Added guess "${guessLower}" to player2 (${playerId}). Total guesses: ${this.state.player2Guesses.length}`);
       }
       
       // Check if player won
@@ -492,6 +498,7 @@ export class Wordle extends BaseGame {
       
       // Check if player used all guesses
       const currentPlayerGuesses = isPlayer1 ? this.state.player1Guesses?.length || 0 : this.state.player2Guesses?.length || 0;
+      logger.info(`[Wordle] Player ${playerId} has made ${currentPlayerGuesses} guesses`);
       if (currentPlayerGuesses >= this.MAX_GUESSES) {
         // Switch to other player if they haven't finished
         const otherPlayerFinished = isPlayer1 
@@ -1304,11 +1311,14 @@ export class Wordle extends BaseGame {
   private generateBotGuess(): string {
     // Get previous bot guesses
     const botGuesses = this.state.player2Guesses || [];
+    logger.info(`[Wordle] Bot's previous guesses: ${JSON.stringify(botGuesses)}`);
     
     if (botGuesses.length === 0) {
       // First guess - use a common starting word
       const startWords = ['crane', 'slate', 'crate', 'stare', 'trace', 'raise', 'adieu', 'roast'];
-      return startWords[Math.floor(Math.random() * startWords.length)];
+      const chosen = startWords[Math.floor(Math.random() * startWords.length)];
+      logger.info(`[Wordle] Bot's first guess: ${chosen}`);
+      return chosen;
     }
     
     // If we've already made 5 guesses, just try any valid word
@@ -1347,7 +1357,10 @@ export class Wordle extends BaseGame {
     // Find valid words that match constraints
     const validWords = this.allowed.filter(word => {
       // Skip already guessed words
-      if (botGuesses.includes(word)) return false;
+      if (botGuesses.includes(word)) {
+        logger.info(`[Wordle] Skipping already guessed word: ${word}`);
+        return false;
+      }
       
       // Check letters that must be in specific positions
       for (const [pos, letter] of Object.entries(mustBeAt)) {
@@ -1383,13 +1396,28 @@ export class Wordle extends BaseGame {
       return chosen;
     }
     
-    // Fallback - shouldn't happen with valid game state
-    logger.warn(`[Wordle] Bot using fallback - no valid words found!`);
-    return this.allowed[Math.floor(Math.random() * this.allowed.length)];
+    // Fallback - pick any word not already guessed
+    logger.warn(`[Wordle] Bot using fallback - no valid words found with constraints!`);
+    const unusedWords = this.allowed.filter(w => !botGuesses.includes(w));
+    if (unusedWords.length > 0) {
+      const fallback = unusedWords[Math.floor(Math.random() * unusedWords.length)];
+      logger.info(`[Wordle] Bot fallback word: ${fallback}`);
+      return fallback;
+    }
+    
+    // Last resort - this should never happen
+    logger.error(`[Wordle] Bot has no valid words left!`);
+    return this.allowed[0];
   }
   
   private makeBotMoveSync(): void {
-    logger.info(`[Wordle] makeBotMoveSync called - player2IsBot: ${this.state.player2IsBot}, currentGuesser: ${this.state.currentGuesser}, gameOver: ${this.state.gameOver}`);
+    logger.info(`[Wordle] makeBotMoveSync called - player2IsBot: ${this.state.player2IsBot}, currentGuesser: ${this.state.currentGuesser}, gameOver: ${this.state.gameOver}, processingBotMove: ${this.state.processingBotMove}`);
+    
+    // Check if already processing a bot move
+    if (this.state.processingBotMove) {
+      logger.warn(`[Wordle] Bot move already in progress, skipping`);
+      return;
+    }
     
     if (!this.state.player2IsBot || this.state.currentGuesser !== 'bot' || this.state.gameOver) {
       logger.info(`[Wordle] Bot move skipped - conditions not met`);
