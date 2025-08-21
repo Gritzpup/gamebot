@@ -6,6 +6,9 @@ export { Othello } from './board-games/Othello';
 // Word Games
 export { Wordle } from './word-games/Wordle';
 
+// Card Games
+export { Uno } from './card-games/Uno';
+
 // Game metadata for registration
 export const games = [
   // Board Games
@@ -41,5 +44,14 @@ export const games = [
     description: 'Guess the 5-letter word in 6 tries',
     minPlayers: 1,
     maxPlayers: 1,
+  },
+  // Card Games
+  {
+    id: 'uno',
+    name: 'UNO',
+    category: 'card-games',
+    description: 'Classic card game - match colors and numbers!',
+    minPlayers: 2,
+    maxPlayers: 10,
   },
 ];

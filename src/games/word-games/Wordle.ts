@@ -893,7 +893,6 @@ export class Wordle extends BaseGame {
           content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
           content += `👇 IT'S YOUR TURN! TYPE YOUR GUESS! 👇\n`;
           content += `Just type any 5-letter word and press Enter\n`;
-          content += `Examples: CRANE, SLATE, AUDIO\n`;
           content += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
         }
       }
