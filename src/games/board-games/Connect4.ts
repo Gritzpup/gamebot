@@ -1,11 +1,12 @@
-import { BaseGame } from '../../BaseGame';
+import { BaseGame } from '../BaseGame';
 import {
   GameCategory,
   GameDifficulty,
   MoveResult,
   AIDifficulty
-} from '../../../types/game.types';
-import { UIMessage } from '../../../types';
+} from '../../types/game.types';
+import { UIMessage } from '../../types';
+import { logger } from '../../utils/logger';
 
 enum Connect4GameState {
   WAITING_FOR_PLAYER = 'waiting_for_player',
@@ -26,6 +27,8 @@ interface Connect4State {
   isVsBot?: boolean;
   botDifficulty?: AIDifficulty;
   creatorId?: string;
+  winnerId?: string;
+  isDraw?: boolean;
 }
 
 export class Connect4 extends BaseGame {
@@ -176,6 +179,7 @@ export class Connect4 extends BaseGame {
       
       const cancellingPlayer = this.getSafePlayerName(playerId);
       this.gameState.gameState = Connect4GameState.GAME_OVER;
+      // Don't set a winner for cancelled games
       return {
         success: true,
         gameEnded: true,
@@ -251,6 +255,7 @@ export class Connect4 extends BaseGame {
     // Check for win
     if (this.checkWin(row, col, color)) {
       this.gameState.gameState = Connect4GameState.GAME_OVER;
+      this.gameState.winnerId = playerId;
       return {
         success: true,
         gameEnded: true,
@@ -262,6 +267,7 @@ export class Connect4 extends BaseGame {
     // Check for draw
     if (this.checkDraw()) {
       this.gameState.gameState = Connect4GameState.GAME_OVER;
+      this.gameState.isDraw = true;
       return {
         success: true,
         gameEnded: true,
@@ -376,7 +382,19 @@ export class Connect4 extends BaseGame {
     
     // Add turn info
     if (this.isEnded || this.gameState.gameState === Connect4GameState.GAME_OVER) {
-      content += '🏆 Game Over!\n';
+      content += '🏆 Game Over! ';
+      
+      // Check who won
+      if (this.gameState.isDraw) {
+        content += "It's a draw!\n";
+      } else if (this.gameState.winnerId) {
+        const winnerColor = this.gameState.winnerId === this.gameState.players.R ? '🔴' : '🟡';
+        const winnerName = this.getSafePlayerName(this.gameState.winnerId);
+        content += `${winnerColor} ${winnerName} wins!\n`;
+      } else {
+        // Game was cancelled or ended without a winner
+        content += '\n';
+      }
     } else {
       const currentColor = this.gameState.currentPlayer === 'R' ? '🔴' : '🟡';
       const currentName = this.isPlayerBot(currentPlayerId) ? '🤖 Bot' : this.getSafePlayerName(currentPlayerId);
@@ -496,38 +514,62 @@ export class Connect4 extends BaseGame {
   }
 
   async makeBotMove(): Promise<MoveResult> {
+    logger.info(`[Connect4] Bot move starting for session ${this.id}`);
+    
     // Use the stored bot difficulty or default to intermediate
     const difficulty = this.gameState.botDifficulty || AIDifficulty.Intermediate;
+    logger.info(`[Connect4] Bot difficulty: ${difficulty}`);
     
     // Small delay to make bot feel more natural
+    logger.debug(`[Connect4] Bot thinking delay starting...`);
     await new Promise(resolve => setTimeout(resolve, 1000));
+    logger.debug(`[Connect4] Bot thinking delay completed`);
     
-    return this.makeAIMove(difficulty);
+    try {
+      const result = await this.makeAIMove(difficulty);
+      logger.info(`[Connect4] Bot move completed successfully`);
+      return result;
+    } catch (error) {
+      logger.error(`[Connect4] Bot move failed:`, error);
+      throw error;
+    }
   }
 
   async makeAIMove(difficulty: AIDifficulty): Promise<MoveResult> {
     const aiPlayerId = this.gameState.players[this.gameState.currentPlayer];
+    logger.info(`[Connect4] AI calculating move for player ${aiPlayerId}, difficulty: ${difficulty}`);
     
     let move;
+    const startTime = Date.now();
+    
     switch (difficulty) {
       case AIDifficulty.Beginner:
+        logger.debug(`[Connect4] Getting random move...`);
         move = this.getRandomMove();
         break;
       case AIDifficulty.Intermediate:
+        logger.debug(`[Connect4] Getting intermediate move...`);
         move = this.getIntermediateMove();
         break;
       case AIDifficulty.Advanced:
       case AIDifficulty.Master:
+        logger.debug(`[Connect4] Getting best move...`);
         move = this.getBestMove();
         break;
       default:
+        logger.debug(`[Connect4] Defaulting to random move...`);
         move = this.getRandomMove();
     }
+    
+    const calcTime = Date.now() - startTime;
+    logger.info(`[Connect4] AI move calculated in ${calcTime}ms: col ${move?.col}`);
 
     if (!move) {
+      logger.error(`[Connect4] No valid moves available!`);
       throw new Error('No valid moves available');
     }
 
+    logger.debug(`[Connect4] Making move for AI player ${aiPlayerId} at column ${move.col}`);
     return this.makeMove(aiPlayerId, move);
   }
 
@@ -636,29 +678,42 @@ export class Connect4 extends BaseGame {
   }
 
   private getBestMove(): { col: number } | null {
+    logger.debug(`[Connect4] getBestMove called`);
     const color = this.gameState.currentPlayer;
     const opponentColor = color === 'R' ? 'Y' : 'R';
 
     // Try to win
+    logger.debug(`[Connect4] Checking for winning moves for ${color}...`);
     const winMove = this.findWinningMove(color);
-    if (winMove !== null) return { col: winMove };
+    if (winMove !== null) {
+      logger.debug(`[Connect4] Found winning move at column ${winMove}`);
+      return { col: winMove };
+    }
 
     // Try to block opponent
+    logger.debug(`[Connect4] Checking for blocking moves against ${opponentColor}...`);
     const blockMove = this.findWinningMove(opponentColor);
-    if (blockMove !== null) return { col: blockMove };
+    if (blockMove !== null) {
+      logger.debug(`[Connect4] Found blocking move at column ${blockMove}`);
+      return { col: blockMove };
+    }
 
     // Prefer center columns
+    logger.debug(`[Connect4] No winning/blocking moves, checking center columns...`);
     const centerCols = [3, 2, 4, 1, 5, 0, 6];
     for (const col of centerCols) {
       if (this.gameState.board[0][col] === null) {
+        logger.debug(`[Connect4] Selecting center column ${col}`);
         return { col };
       }
     }
 
+    logger.debug(`[Connect4] No center columns available, getting random move`);
     return this.getRandomMove();
   }
 
   private findWinningMove(color: string): number | null {
+    logger.debug(`[Connect4] findWinningMove called for color ${color}`);
     for (let col = 0; col < this.COLS; col++) {
       if (this.gameState.board[0][col] !== null) continue;
 

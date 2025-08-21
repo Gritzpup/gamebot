@@ -155,8 +155,21 @@ export class GameSession {
         if (result.shouldMakeBotMove && 'makeBotMove' in this.game) {
           // Schedule bot move after a short delay
           setTimeout(async () => {
+            // Create a timeout promise that rejects after 5 seconds
+            const timeoutPromise = new Promise((_, reject) => {
+              setTimeout(() => reject(new Error('Bot move timeout after 5 seconds')), 5000);
+            });
+            
             try {
-              const botResult = await (this.game as any).makeBotMove();
+              logger.info(`[GameSession] Bot starting move calculation for session ${this.id}`);
+              
+              // Race between bot move and timeout
+              const botResult = await Promise.race([
+                (this.game as any).makeBotMove(),
+                timeoutPromise
+              ]);
+              
+              logger.info(`[GameSession] Bot move completed for session ${this.id}`);
               this.handleMoveResult(botResult);
               this.updatedAt = new Date();
               
@@ -165,7 +178,16 @@ export class GameSession {
                 await (this as any).onBotMove();
               }
             } catch (error) {
-              logger.error('Error making bot move:', error);
+              logger.error(`[GameSession] Bot move failed for session ${this.id}:`, error);
+              
+              // If bot move times out or fails, try to continue the game
+              if (error instanceof Error && error.message && error.message.includes('timeout')) {
+                // Log detailed error for debugging
+                logger.error(`[GameSession] Bot move timed out - game state may be stuck`);
+                
+                // Optional: Force end the bot's turn or make a random move
+                // For now, just log the error and continue
+              }
             }
           }, 100);
         }

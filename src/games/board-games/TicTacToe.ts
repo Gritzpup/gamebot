@@ -1,12 +1,12 @@
-import { BaseGame } from '../../BaseGame';
+import { BaseGame } from '../BaseGame';
 import {
   GameCategory,
   GameDifficulty,
   MoveResult,
   AIDifficulty,
   GameEndReason
-} from '../../../types/game.types';
-import { UIMessage } from '../../../types';
+} from '../../types/game.types';
+import { UIMessage } from '../../types';
 
 enum TicTacToeGameState {
   WAITING_FOR_PLAYER = 'waiting_for_player',

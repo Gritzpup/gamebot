@@ -17,7 +17,8 @@ import {
   GameRegistryEntry, 
   GameCategory,
   GameEvent,
-  GameEventType 
+  GameEventType,
+  GameEndReason
 } from '../types/game.types';
 import { 
   Platform, 
@@ -660,6 +661,48 @@ export class GameEngine extends EventEmitter {
     const listLinksCommand = new ListLinksCommand();
     adapter.onCommand('links', async (ctx) => {
       await listLinksCommand.execute(ctx);
+    });
+    
+    // Force quit command for admins
+    adapter.onCommand('forcequit', async (ctx) => {
+      if (!ctx.isAdmin) {
+        await ctx.reply({
+          content: '❌ This command is only available to admins.',
+        });
+        return;
+      }
+      
+      // Get all active games in this channel
+      const channelSessions = await this.stateManager.getChannelSessions(ctx.channelId);
+      
+      if (channelSessions.length === 0) {
+        await ctx.reply({
+          content: '✅ No active games in this channel.',
+        });
+        return;
+      }
+      
+      logger.warn(`[GameEngine] Admin ${ctx.userId} force-quitting ${channelSessions.length} games in channel ${ctx.channelId}`);
+      
+      // Force end all games in the channel
+      let endedCount = 0;
+      for (const sessionId of channelSessions) {
+        try {
+          const session = await this.getOrLoadSession(sessionId);
+          if (session && !session.isEnded()) {
+            await session.endGame(GameEndReason.AdminStop);
+            await this.saveSession(session);
+            endedCount++;
+            logger.info(`[GameEngine] Force-quit game ${sessionId}`);
+          }
+        } catch (error) {
+          logger.error(`[GameEngine] Failed to force-quit game ${sessionId}:`, error);
+        }
+      }
+      
+      await ctx.reply({
+        content: `🛑 Force-quit ${endedCount} active game(s) in this channel.`,
+      });
     });
   }
 

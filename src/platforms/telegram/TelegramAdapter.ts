@@ -393,6 +393,15 @@ export class TelegramAdapter extends PlatformAdapter {
           if (gameSessionId) {
             logger.info(`[Wordle] Processing guess "${cleanText}" for session ${gameSessionId}`);
             
+            // Get the game's message ID for UI updates
+            const redis = (await import('../../services/redis/RedisClient')).RedisClient.getInstance();
+            const stateManager = redis.getStateManager();
+            const messageId = await stateManager.getSessionMessageId(gameSessionId);
+            
+            if (!messageId) {
+              logger.warn(`[Wordle] No messageId found for session ${gameSessionId}`);
+            }
+            
             // Create a text input interaction for Wordle
             const interaction: GameInteraction = {
               id: msg.message_id.toString(),
@@ -401,7 +410,7 @@ export class TelegramAdapter extends PlatformAdapter {
               userId,
               channelId: msg.chat.id.toString(),
               gameSessionId,
-              messageId: undefined, // Text inputs don't have a specific game message
+              messageId: messageId || undefined, // Use the game's message ID if available
               data: { text: cleanText },
               timestamp: new Date(),
             };
@@ -413,13 +422,50 @@ export class TelegramAdapter extends PlatformAdapter {
             await this.handleInteraction(interaction);
             return;
           } else {
-            // No active session found - provide helpful feedback
-            logger.warn(`[Wordle] User ${userId} tried to guess "${cleanText}" but has no active game`);
-            await this.bot.sendMessage(
-              msg.chat.id, 
-              `❌ No active Wordle game found!\n\n👉 Start a new game with: /play wordle\n\nThen type your 5-letter guesses directly in the chat.`,
-              { reply_to_message_id: msg.message_id }
-            );
+            // No active Wordle session found - check if user has other games
+            logger.warn(`[Wordle] User ${userId} tried to guess "${cleanText}" but has no active Wordle game`);
+            
+            // Check if user has other active games
+            const redis = (await import('../../services/redis/RedisClient')).RedisClient.getInstance();
+            const stateManager = redis.getStateManager();
+            const playerGames = await stateManager.getPlayerGames(userId);
+            
+            if (playerGames.length > 0) {
+              // User has other games active - get details
+              const otherGames = [];
+              for (const sessionId of playerGames) {
+                const gameState = await stateManager.getGameState(sessionId);
+                if (gameState && !gameState.ended) {
+                  otherGames.push(gameState.gameType);
+                }
+              }
+              
+              if (otherGames.length > 0) {
+                await this.bot.sendMessage(
+                  msg.chat.id, 
+                  `❌ You're currently playing ${otherGames.join(', ')}!\n\n` +
+                  `To play Wordle:\n` +
+                  `1️⃣ Quit current game: /quit\n` +
+                  `2️⃣ Start Wordle: /play wordle\n` +
+                  `3️⃣ Type 5-letter words to guess!`,
+                  { reply_to_message_id: msg.message_id }
+                );
+              } else {
+                // Games exist but all ended
+                await this.bot.sendMessage(
+                  msg.chat.id, 
+                  `❌ No active Wordle game found!\n\n👉 Start a new game with: /play wordle\n\nThen type your 5-letter guesses directly in the chat.`,
+                  { reply_to_message_id: msg.message_id }
+                );
+              }
+            } else {
+              // No games at all
+              await this.bot.sendMessage(
+                msg.chat.id, 
+                `❌ No active Wordle game found!\n\n👉 Start a new game with: /play wordle\n\nThen type your 5-letter guesses directly in the chat.`,
+                { reply_to_message_id: msg.message_id }
+              );
+            }
             return;
           }
         } else if (cleanText.length > 0 && cleanText.length < 10 && /^[A-Z]+$/.test(cleanText)) {
@@ -523,6 +569,8 @@ export class TelegramAdapter extends PlatformAdapter {
   
   private async findActiveWordleSession(userId: string, channelId: string): Promise<string | null> {
     try {
+      logger.info(`[Wordle] Looking for active Wordle session for user ${userId} in channel ${channelId}`);
+      
       // Get Redis state manager to find active games
       const redis = (await import('../../services/redis/RedisClient')).RedisClient.getInstance();
       const stateManager = redis.getStateManager();
@@ -531,11 +579,19 @@ export class TelegramAdapter extends PlatformAdapter {
       const playerGames = await stateManager.getPlayerGames(userId);
       logger.info(`[Wordle] Player ${userId} has ${playerGames.length} active games: ${playerGames.join(', ')}`);
       
+      if (playerGames.length === 0) {
+        logger.info(`[Wordle] No active games found for player ${userId}`);
+        return null;
+      }
+      
       // Check each game to see if it's a Wordle game
       for (const sessionId of playerGames) {
         const gameState = await stateManager.getGameState(sessionId);
         logger.info(`[Wordle] Checking game ${sessionId}:`, {
+          exists: !!gameState,
           gameType: gameState?.gameType,
+          expectedType: 'wordle',
+          typeMatch: gameState?.gameType === 'wordle',
           channelId: gameState?.channelId,
           ended: gameState?.ended,
           players: gameState?.players,
@@ -543,12 +599,19 @@ export class TelegramAdapter extends PlatformAdapter {
         });
         
         if (gameState && gameState.gameType === 'wordle' && gameState.channelId === channelId && !gameState.ended) {
-          logger.info(`[Wordle] Found active Wordle session: ${sessionId}`);
+          logger.info(`[Wordle] ✅ Found active Wordle session: ${sessionId}`);
           return sessionId;
+        } else if (gameState) {
+          // Log why this session didn't match
+          const reasons = [];
+          if (gameState.gameType !== 'wordle') reasons.push(`wrong game type: ${gameState.gameType}`);
+          if (gameState.channelId !== channelId) reasons.push(`wrong channel: ${gameState.channelId} != ${channelId}`);
+          if (gameState.ended) reasons.push('game already ended');
+          logger.info(`[Wordle] Session ${sessionId} skipped: ${reasons.join(', ')}`);
         }
       }
       
-      logger.info(`[Wordle] No active Wordle session found for user ${userId} in channel ${channelId}`);
+      logger.info(`[Wordle] ❌ No active Wordle session found for user ${userId} in channel ${channelId}`);
       return null;
     } catch (error) {
       logger.error('Error finding active Wordle session:', error);

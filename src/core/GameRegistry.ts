@@ -10,10 +10,9 @@ export interface GameInfo {
 export class GameRegistry {
   private static instance: GameRegistry;
   private games = new Map<string, GameInfo>();
-  private environment: 'production' | 'development' | 'all';
 
   private constructor() {
-    this.environment = (process.env.NODE_ENV as any) || 'production';
+    // No longer need environment check
   }
 
   static getInstance(): GameRegistry {
@@ -24,34 +23,20 @@ export class GameRegistry {
   }
 
   async loadGames(): Promise<void> {
-    logger.info(`Loading games for environment: ${this.environment}`);
+    logger.info('Loading games...');
     
     try {
-      // Load production games
-      if (this.environment === 'production' || this.environment === 'all') {
-        const prodModule = await import('../games/production');
-        const { productionGames, ...gameClasses } = prodModule;
-        
-        for (const gameInfo of productionGames) {
-          const className = this.getClassName(gameInfo.id);
-          const GameClass = (gameClasses as any)[className];
-          if (GameClass) {
-            this.registerGame(gameInfo.id, gameInfo.name, GameClass);
-          }
-        }
-      }
+      // Load all games from the unified games folder
+      const gamesModule = await import('../games');
+      const { games: gameList, ...gameClasses } = gamesModule;
       
-      // Load development games
-      if (this.environment === 'development' || this.environment === 'all') {
-        const devModule = await import('../games/development');
-        const { developmentGames, ...gameClasses } = devModule;
-        
-        for (const gameInfo of developmentGames || []) {
-          const className = this.getClassName(gameInfo.id);
-          const GameClass = (gameClasses as any)[className];
-          if (GameClass) {
-            this.registerGame(gameInfo.id, gameInfo.name, GameClass);
-          }
+      for (const gameInfo of gameList) {
+        const className = this.getClassName(gameInfo.id);
+        const GameClass = (gameClasses as any)[className];
+        if (GameClass) {
+          this.registerGame(gameInfo.id, gameInfo.name, GameClass);
+        } else {
+          logger.warn(`Game class not found for ${gameInfo.id} (expected class name: ${className})`);
         }
       }
       
