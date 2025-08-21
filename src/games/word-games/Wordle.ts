@@ -219,7 +219,8 @@ export class Wordle extends BaseGame {
             this.state.player1Won = false;
             this.state.waitingStartTime = Date.now();
             this.state.gameState = WordleGameState.WAITING_FOR_PLAYER;
-            logger.info(`[Wordle] Versus mode selected - Waiting for second player`);
+            logger.info(`[Wordle] Versus mode selected by ${interaction.userId} (${this.state.player1Name}) - Waiting for second player`);
+            logger.info(`[Wordle] Game state after versus selection: player1Id=${this.state.player1Id}, versusMode=${this.state.versusMode}`);
             return { success: true, stateChanged: true };
           }
         }
@@ -727,7 +728,7 @@ export class Wordle extends BaseGame {
   
   renderState(forPlayer?: string): UIMessage {
     try {
-      logger.info(`[Wordle] Rendering state: ${this.state.gameState} for player: ${forPlayer}`);
+      logger.info(`[Wordle] Rendering state: ${this.state.gameState} for player: ${forPlayer}, game creator: ${this.state.player1Id} (${this.state.player1Name})`);
       
       // Ensure state is valid
       if (!this.state.gameState) {
@@ -835,16 +836,24 @@ export class Wordle extends BaseGame {
       components = [];
       // Show different buttons based on who's viewing
       if (this.state.versusMode) {
-        logger.info(`[Wordle] Rendering versus mode buttons - forPlayer: ${forPlayer}, player1Id: ${this.state.player1Id}`);
-        // Only the creator (player1) sees play vs bot and cancel
-        if (forPlayer && this.state.player1Id && forPlayer === this.state.player1Id) {
+        logger.info(`[Wordle] CRITICAL BUTTON DEBUG:`);
+        logger.info(`[Wordle]   - forPlayer: "${forPlayer}"`);
+        logger.info(`[Wordle]   - player1Id: "${this.state.player1Id}"`);
+        logger.info(`[Wordle]   - player1Name: "${this.state.player1Name}"`);
+        logger.info(`[Wordle]   - Are they equal? ${forPlayer === this.state.player1Id}`);
+        
+        // FIXED: Only show buttons to players who have a valid ID
+        if (!forPlayer) {
+          logger.info(`[Wordle] No forPlayer provided - showing JOIN button as default`);
+          components.push({ type: 'button', id: 'join_game', label: '🎮 Join Game', style: 'success' });
+        } else if (this.state.player1Id && forPlayer === this.state.player1Id) {
+          logger.info(`[Wordle] Player ${forPlayer} IS the creator - showing creator buttons`);
           components.push({ type: 'button', id: 'play_bot', label: '🤖 Play vs Bot', style: 'primary' });
           components.push({ type: 'button', id: 'cancel_game', label: '❌ Cancel', style: 'danger' });
-        } else if (forPlayer && forPlayer !== this.state.player1Id) {
-          // Other players can join (only if they have a valid player ID)
+        } else {
+          logger.info(`[Wordle] Player ${forPlayer} is NOT the creator - showing join button`);
           components.push({ type: 'button', id: 'join_game', label: '🎮 Join Game', style: 'success' });
         }
-        // If forPlayer is undefined, show no buttons (spectator mode)
       } else {
         // Custom mode
         if (!isCreator) {
