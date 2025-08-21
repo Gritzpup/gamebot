@@ -133,12 +133,7 @@ export class Wordle extends BaseGame {
       this.state.keyboard[letter] = 'unused';
     });
     
-    // Store creator info
-    const players = this.getPlayers();
-    if (players.length > 0) {
-      this.state.creatorId = players[0];
-      this.state.creatorName = this.getPlayerName(players[0]);
-    }
+    // Creator info will be set when a mode is selected
     
     logger.info(`[Wordle] Initialized in mode selection - Creator: ${this.state.creatorName} (${this.state.creatorId})`);
   }
@@ -191,6 +186,8 @@ export class Wordle extends BaseGame {
           if (buttonId === 'mode_custom') {
             this.state.gameMode = 'custom';
             this.state.customMode = true;
+            this.state.creatorId = interaction.userId;
+            this.state.creatorName = this.getPlayerName(interaction.userId);
             this.state.gameState = WordleGameState.WAITING_FOR_WORD;
             logger.info(`[Wordle] Custom mode selected - Waiting for word from ${this.state.creatorName}`);
             return { success: true, stateChanged: true };
@@ -210,8 +207,8 @@ export class Wordle extends BaseGame {
             this.state.gameMode = 'versus';
             this.state.customMode = false;
             this.state.versusMode = true;
-            this.state.player1Id = this.state.creatorId;
-            this.state.player1Name = this.state.creatorName;
+            this.state.player1Id = interaction.userId;
+            this.state.player1Name = this.getPlayerName(interaction.userId);
             this.state.player1Guesses = [];
             this.state.player1Won = false;
             this.state.gameState = WordleGameState.WAITING_FOR_PLAYER;
