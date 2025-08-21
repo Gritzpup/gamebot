@@ -304,8 +304,25 @@ export class Wordle extends BaseGame {
       }
       
       if (interaction.type === 'button_click' && interaction.data?.id === 'cancel_game') {
-        if (interaction.userId === this.state.creatorId) {
+        if (interaction.userId === this.state.creatorId || interaction.userId === this.state.player1Id) {
           return { success: true, gameEnded: true, stateChanged: false };
+        }
+      }
+      
+      if (interaction.type === 'button_click' && interaction.data?.id === 'play_bot') {
+        if (this.state.versusMode && (interaction.userId === this.state.player1Id)) {
+          // Start game with bot immediately
+          this.state.player2Id = 'bot';
+          this.state.player2Name = '🤖 WordleBot';
+          this.state.player2IsBot = true;
+          this.state.player2Guesses = [];
+          this.state.player2Won = false;
+          this.selectTargetWord();
+          this.state.currentGuesser = this.state.player1Id;
+          this.state.gameState = WordleGameState.PLAYING;
+          this.state.startTime = Date.now();
+          logger.info(`[Wordle] Player chose to play versus bot - Word: ${this.state.targetWord}`);
+          return { success: true, stateChanged: true };
         }
       }
       
@@ -813,6 +830,9 @@ export class Wordle extends BaseGame {
         components.push({ type: 'button', id: 'join_game', label: '🎮 Join Game', style: 'success' });
       }
       if (isCreator) {
+        if (this.state.versusMode) {
+          components.push({ type: 'button', id: 'play_bot', label: '🤖 Play vs Bot', style: 'primary' });
+        }
         components.push({ type: 'button', id: 'cancel_game', label: '❌ Cancel', style: 'danger' });
       }
       
