@@ -177,7 +177,7 @@ export class Wordle extends BaseGame {
       if (this.state.gameState === WordleGameState.MODE_SELECTION) {
         if (interaction.type === 'button_click') {
           const buttonId = interaction.data?.id;
-          logger.info(`[Wordle] Mode selection button clicked: ${buttonId}`);
+          logger.info(`[Wordle] Mode selection button clicked by ${interaction.userId}: ${buttonId}`);
           
           if (buttonId === 'mode_single') {
             this.state.gameMode = 'random';
@@ -311,27 +311,31 @@ export class Wordle extends BaseGame {
       }
       
       if (interaction.type === 'button_click' && interaction.data?.id === 'cancel_game') {
-        if (interaction.userId === this.state.creatorId || interaction.userId === this.state.player1Id) {
-          return { success: true, gameEnded: true, stateChanged: false };
+        // Only the game creator can cancel
+        if (interaction.userId !== this.state.creatorId && interaction.userId !== this.state.player1Id) {
+          return { success: false, message: "Only the game creator can cancel!", stateChanged: false };
         }
+        return { success: true, gameEnded: true, stateChanged: false };
       }
       
       if (interaction.type === 'button_click' && interaction.data?.id === 'play_bot') {
-        if (this.state.versusMode && (interaction.userId === this.state.player1Id)) {
-          // Start game with bot immediately
-          this.state.player2Id = 'bot';
-          this.state.player2Name = '🤖 WordleBot';
-          this.state.player2IsBot = true;
-          this.state.player2Guesses = [];
-          this.state.player2Won = false;
-          this.state.processingBotMove = false;
-          this.selectTargetWord();
-          this.state.currentGuesser = this.state.player1Id;
-          this.state.gameState = WordleGameState.PLAYING;
-          this.state.startTime = Date.now();
-          logger.info(`[Wordle] Player chose to play versus bot - Word: ${this.state.targetWord}`);
-          return { success: true, stateChanged: true };
+        // Only the game creator can start bot game
+        if (!this.state.versusMode || interaction.userId !== this.state.player1Id) {
+          return { success: false, message: "Only the game creator can start a bot game!", stateChanged: false };
         }
+        // Start game with bot immediately
+        this.state.player2Id = 'bot';
+        this.state.player2Name = '🤖 WordleBot';
+        this.state.player2IsBot = true;
+        this.state.player2Guesses = [];
+        this.state.player2Won = false;
+        this.state.processingBotMove = false;
+        this.selectTargetWord();
+        this.state.currentGuesser = this.state.player1Id;
+        this.state.gameState = WordleGameState.PLAYING;
+        this.state.startTime = Date.now();
+        logger.info(`[Wordle] Player chose to play versus bot - Word: ${this.state.targetWord}`);
+        return { success: true, stateChanged: true };
       }
       
       return null;
@@ -829,14 +833,24 @@ export class Wordle extends BaseGame {
       content += `\`\`\``;
       
       components = [];
-      if (!isCreator) {
-        components.push({ type: 'button', id: 'join_game', label: '🎮 Join Game', style: 'success' });
-      }
-      if (isCreator) {
-        if (this.state.versusMode) {
+      // Show different buttons based on who's viewing
+      if (this.state.versusMode) {
+        logger.info(`[Wordle] Rendering versus mode buttons - forPlayer: ${forPlayer}, player1Id: ${this.state.player1Id}`);
+        // Only the creator (player1) sees play vs bot and cancel
+        if (forPlayer === this.state.player1Id) {
           components.push({ type: 'button', id: 'play_bot', label: '🤖 Play vs Bot', style: 'primary' });
+          components.push({ type: 'button', id: 'cancel_game', label: '❌ Cancel', style: 'danger' });
+        } else {
+          // Other players can join
+          components.push({ type: 'button', id: 'join_game', label: '🎮 Join Game', style: 'success' });
         }
-        components.push({ type: 'button', id: 'cancel_game', label: '❌ Cancel', style: 'danger' });
+      } else {
+        // Custom mode
+        if (!isCreator) {
+          components.push({ type: 'button', id: 'join_game', label: '🎮 Join Game', style: 'success' });
+        } else {
+          components.push({ type: 'button', id: 'cancel_game', label: '❌ Cancel', style: 'danger' });
+        }
       }
       
       return { content, components };
