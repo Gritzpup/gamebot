@@ -54,6 +54,7 @@ interface WordleState {
   currentGuesser?: string; // Track whose turn it is in versus mode
   waitingStartTime?: number; // When we started waiting for opponent
   player2IsBot?: boolean; // Whether player 2 is a bot
+  processingBotMove?: boolean; // Flag to prevent recursive bot moves
 }
 
 interface LetterResult {
@@ -500,11 +501,10 @@ export class Wordle extends BaseGame {
         if (!otherPlayerFinished) {
           this.state.currentGuesser = isPlayer1 ? this.state.player2Id : this.state.player1Id;
           
-          // Trigger bot move if it's now bot's turn
-          if (this.state.player2IsBot && this.state.currentGuesser === 'bot') {
-            this.makeBotMove().catch(err => {
-              logger.error(`[Wordle] Error in bot move after max guesses:`, err);
-            });
+          // If it's now bot's turn, make the bot move immediately
+          if (this.state.player2IsBot && this.state.currentGuesser === 'bot' && !this.state.processingBotMove) {
+            logger.info(`[Wordle] Bot's turn after player ran out of guesses, making bot move`);
+            this.makeBotMoveSync();
           }
           
           return { success: true, gameEnded: false, stateChanged: true };
@@ -525,12 +525,10 @@ export class Wordle extends BaseGame {
       // Normal turn switch
       this.state.currentGuesser = isPlayer1 ? this.state.player2Id : this.state.player1Id;
       
-      // Trigger bot move if it's now bot's turn
-      if (this.state.player2IsBot && this.state.currentGuesser === 'bot') {
-        // Use a promise to handle the async bot move
-        this.makeBotMove().catch(err => {
-          logger.error(`[Wordle] Error in bot move:`, err);
-        });
+      // If it's now bot's turn, make the bot move immediately
+      if (this.state.player2IsBot && this.state.currentGuesser === 'bot' && !this.state.processingBotMove) {
+        logger.info(`[Wordle] Bot's turn after player move, making bot move`);
+        this.makeBotMoveSync();
       }
       
       return { success: true, gameEnded: false, stateChanged: true };
@@ -786,15 +784,12 @@ export class Wordle extends BaseGame {
         const waitTime = Date.now() - (this.state.waitingStartTime || 0);
         const timeRemaining = Math.max(0, 10 - Math.floor(waitTime / 1000));
         
-        // Don't auto-start in renderState - this should be handled by user interaction
-        
         // Versus mode
         content = `\`\`\`\n╔═══════════════════════════╗\n`;
         content += `║   WORDLE - VERSUS MODE    ║\n`;
         content += `╚═══════════════════════════╝\n\n`;
         content += `⚔️ ${this.state.player1Name} is ready!\n\n`;
-        content += `Waiting for an opponent...\n`;
-        content += `⏱️ Bot joins in: ${timeRemaining}s\n\n`;
+        content += `Waiting for an opponent...\n\n`;
         content += `First to guess the word wins!\n`;
         content += `Or whoever guesses in fewer tries.\n`;
       } else {
@@ -1393,30 +1388,32 @@ export class Wordle extends BaseGame {
     return this.allowed[Math.floor(Math.random() * this.allowed.length)];
   }
   
-  private async makeBotMove(): Promise<void> {
-    logger.info(`[Wordle] makeBotMove called - player2IsBot: ${this.state.player2IsBot}, currentGuesser: ${this.state.currentGuesser}, gameOver: ${this.state.gameOver}`);
+  private makeBotMoveSync(): void {
+    logger.info(`[Wordle] makeBotMoveSync called - player2IsBot: ${this.state.player2IsBot}, currentGuesser: ${this.state.currentGuesser}, gameOver: ${this.state.gameOver}`);
     
     if (!this.state.player2IsBot || this.state.currentGuesser !== 'bot' || this.state.gameOver) {
       logger.info(`[Wordle] Bot move skipped - conditions not met`);
       return;
     }
     
-    // Add a small delay to make it feel more natural
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Set flag to prevent recursive bot moves
+    this.state.processingBotMove = true;
     
-    const botGuess = this.generateBotGuess();
-    logger.info(`[Wordle] Bot guessing: ${botGuess}`);
-    
-    // Process the bot's guess
-    const result = this.processGuess('bot', botGuess);
-    logger.info(`[Wordle] Bot guess result: ${JSON.stringify(result)}`);
-    
-    // Check if game ended
-    if (result.success && (this.state.player2Won || this.state.gameOver)) {
-      this.state.gameState = WordleGameState.GAME_OVER;
+    try {
+      const botGuess = this.generateBotGuess();
+      logger.info(`[Wordle] Bot guessing: ${botGuess}`);
+      
+      // Process the bot's guess
+      const result = this.processGuess('bot', botGuess);
+      logger.info(`[Wordle] Bot guess result: ${JSON.stringify(result)}`);
+      
+      // Check if game ended
+      if (result.success && (this.state.player2Won || this.state.gameOver)) {
+        this.state.gameState = WordleGameState.GAME_OVER;
+      }
+    } finally {
+      // Always clear the flag
+      this.state.processingBotMove = false;
     }
-    
-    // The state should automatically update when processGuess is called
-    // No need to manually trigger update
   }
 }
