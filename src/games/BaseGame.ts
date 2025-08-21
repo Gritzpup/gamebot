@@ -146,24 +146,25 @@ export abstract class BaseGame implements IGame {
 
   protected getPlayerName(playerId: string): string {
     if (!playerId) {
-      return 'Unknown';
+      return 'Player';
     }
     
     if (!this.session) {
-      return 'Unknown';
+      return 'Player';
     }
     
     const player = this.session.getPlayer(playerId);
     
     if (!player) {
       // For bot players, return a friendly name
-      if (playerId.startsWith('bot_')) {
-        return 'Bot';
+      if (playerId === 'bot' || playerId.startsWith('bot_')) {
+        return '🤖 WordleBot';
       }
-      return 'Unknown';
+      // Return a more friendly default with partial ID
+      return `Player_${playerId.slice(-4)}`;
     }
     
-    return player.displayName || player.username || 'Unknown';
+    return player.displayName || player.username || `Player_${playerId.slice(-4)}`;
   }
 
   protected escapeMarkdown(text: string): string {

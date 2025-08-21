@@ -274,6 +274,9 @@ export class Wordle extends BaseGame {
           this.state.player2Guesses = [];
           this.state.player2Won = false;
           
+          // Log for debugging
+          logger.info(`[Wordle] Player 2 joined - ID: ${interaction.userId}, Name: ${this.state.player2Name}`);
+          
           // Generate random word for versus mode
           this.selectTargetWord();
           
@@ -364,7 +367,11 @@ export class Wordle extends BaseGame {
           // Reset and start new game
           await this.initialize(this.session);
           await this.start();
-          return { success: true, gameEnded: false, stateChanged: false };
+          // Set the player who clicked new game as the creator for mode selection
+          this.state.creatorId = interaction.userId;
+          this.state.creatorName = this.getPlayerName(interaction.userId);
+          logger.info(`[Wordle] New game started by ${this.state.creatorName} (${this.state.creatorId})`);
+          return { success: true, gameEnded: false, stateChanged: true };
         }
         
         if (buttonId === 'share') {
