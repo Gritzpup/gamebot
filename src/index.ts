@@ -1,7 +1,7 @@
 import { validateConfig } from './config';
 import { logger } from './utils/logger';
 import { GameEngine } from './core/GameEngine';
-import { TelegramAdapter } from './platforms/telegram/TelegramAdapter';
+import { EnhancedTelegramAdapter } from './platforms/telegram/EnhancedTelegramAdapter';
 import { DiscordAdapter } from './platforms/discord/DiscordAdapter';
 import { Database } from './services/database/Database';
 import { RedisClient } from './services/redis/RedisClient';
@@ -53,8 +53,9 @@ async function main() {
     // Initialize platform adapters
     logger.info('Initializing platform adapters...');
     
-    // Telegram adapter
-    const telegramAdapter = new TelegramAdapter();
+    // Enhanced Telegram adapter with MTProto support
+    const telegramAdapter = new EnhancedTelegramAdapter();
+    await telegramAdapter.initialize(); // Initialize MTProto if available
     await gameEngine.registerPlatform(telegramAdapter);
     
     // Discord adapter
@@ -118,7 +119,7 @@ async function main() {
         
         // Disconnect platforms
         await Promise.allSettled([
-          telegramAdapter.disconnect(),
+          telegramAdapter.shutdown().catch(() => telegramAdapter.disconnect()),
           discordAdapter.disconnect(),
         ]);
         

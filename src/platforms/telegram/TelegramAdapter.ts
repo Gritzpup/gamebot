@@ -451,20 +451,12 @@ export class TelegramAdapter extends PlatformAdapter {
                   { reply_to_message_id: msg.message_id }
                 );
               } else {
-                // Games exist but all ended
-                await this.bot.sendMessage(
-                  msg.chat.id, 
-                  `❌ No active Wordle game found!\n\n👉 Start a new game with: /play wordle\n\nThen type your 5-letter guesses directly in the chat.`,
-                  { reply_to_message_id: msg.message_id }
-                );
+                // Games exist but all ended - stay silent
+                logger.info(`[Wordle] Player ${userId} typed "${cleanText}" but all games have ended`);
               }
             } else {
-              // No games at all
-              await this.bot.sendMessage(
-                msg.chat.id, 
-                `❌ No active Wordle game found!\n\n👉 Start a new game with: /play wordle\n\nThen type your 5-letter guesses directly in the chat.`,
-                { reply_to_message_id: msg.message_id }
-              );
+              // No games at all - stay silent  
+              logger.info(`[Wordle] Player ${userId} typed "${cleanText}" but has no games`);
             }
             return;
           }

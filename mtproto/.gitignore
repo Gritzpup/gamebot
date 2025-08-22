@@ -1,0 +1,7 @@
+# Sensitive files
+.env.mtproto
+sessions/
+*.session
+
+# Logs
+*.log

@@ -842,25 +842,18 @@ export class Wordle extends BaseGame {
         logger.info(`[Wordle]   - player1Name: "${this.state.player1Name}"`);
         logger.info(`[Wordle]   - Are they equal? ${forPlayer === this.state.player1Id}`);
         
-        // FIXED: Only show buttons to players who have a valid ID
-        if (!forPlayer) {
-          logger.info(`[Wordle] No forPlayer provided - showing JOIN button as default`);
-          components.push({ type: 'button', id: 'join_game', label: '🎮 Join Game', style: 'success' });
-        } else if (this.state.player1Id && forPlayer === this.state.player1Id) {
-          logger.info(`[Wordle] Player ${forPlayer} IS the creator - showing creator buttons`);
+        // Show all relevant buttons - the game logic will validate who can click what
+        components.push({ type: 'button', id: 'join_game', label: '🎮 Join Game', style: 'success' });
+        
+        // Only show creator buttons if we have a creator
+        if (this.state.player1Id) {
           components.push({ type: 'button', id: 'play_bot', label: '🤖 Play vs Bot', style: 'primary' });
           components.push({ type: 'button', id: 'cancel_game', label: '❌ Cancel', style: 'danger' });
-        } else {
-          logger.info(`[Wordle] Player ${forPlayer} is NOT the creator - showing join button`);
-          components.push({ type: 'button', id: 'join_game', label: '🎮 Join Game', style: 'success' });
         }
       } else {
-        // Custom mode
-        if (!isCreator) {
-          components.push({ type: 'button', id: 'join_game', label: '🎮 Join Game', style: 'success' });
-        } else {
-          components.push({ type: 'button', id: 'cancel_game', label: '❌ Cancel', style: 'danger' });
-        }
+        // Custom mode - show all buttons, game logic will validate
+        components.push({ type: 'button', id: 'join_game', label: '🎮 Join Game', style: 'success' });
+        components.push({ type: 'button', id: 'cancel_game', label: '❌ Cancel', style: 'danger' });
       }
       
       return { content, components };

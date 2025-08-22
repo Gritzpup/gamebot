@@ -122,6 +122,24 @@ export class GameEngine extends EventEmitter {
     
     this.isRunning = true;
     
+    // Clean up any stale sessions from previous run
+    logger.info('Cleaning up stale sessions from previous run...');
+    try {
+      const activeSessions = await this.stateManager.getActiveSessions();
+      logger.info(`Found ${activeSessions.length} sessions in Redis`);
+      
+      for (const sessionId of activeSessions) {
+        const gameState = await this.stateManager.getGameState(sessionId);
+        if (gameState) {
+          // End any sessions that weren't properly cleaned up
+          logger.info(`Cleaning up stale session: ${sessionId}`);
+          await this.endGameSession(sessionId, 'startup_cleanup');
+        }
+      }
+    } catch (error) {
+      logger.error('Error cleaning up stale sessions:', error);
+    }
+    
     // Start cleanup interval
     this.cleanupInterval = setInterval(() => {
       this.cleanupInactiveSessions();
@@ -790,9 +808,8 @@ export class GameEngine extends EventEmitter {
           const adapter = this.platforms.get(interaction.platform);
           if (adapter) {
             try {
-              const players = session.getPlayers();
-              const humanPlayerId = players.find(p => !p.id.startsWith('bot_'))?.id;
-              const finalState = await session.renderGameState(humanPlayerId);
+              // Render state for the player who clicked the button
+              const finalState = await session.renderGameState(interaction.userId);
               
               // Edit the message immediately with the final game state
               await adapter.editMessage(session.getChannelId(), interaction.messageId, finalState);

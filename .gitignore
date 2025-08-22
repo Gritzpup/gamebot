@@ -63,6 +63,11 @@ temp/
 # Session files
 sessions/
 
+# MTProto files
+mtproto/.env.mtproto
+mtproto/sessions/
+*.session
+
 # PM2
 .pm2/
 pids/

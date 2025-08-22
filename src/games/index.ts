@@ -7,7 +7,8 @@ export { Othello } from './board-games/Othello';
 export { Wordle } from './word-games/Wordle';
 
 // Card Games
-export { Uno } from './card-games/Uno';
+export { UnoEnhanced } from './card-games/UnoEnhanced';
+export { UnoEnhanced as Uno } from './card-games/UnoEnhanced'; // For compatibility
 
 // Game metadata for registration
 export const games = [
