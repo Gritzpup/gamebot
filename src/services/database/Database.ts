@@ -303,9 +303,9 @@ export class Database {
     createdBy?: string
   ): Promise<void> {
     await this.db!.run(
-      `INSERT INTO channel_mappings (discord_channel_id, telegram_channel_id, created_by)
+      `INSERT INTO channel_mappings (discord_channel_id, telegram_channel_id, is_active)
        VALUES (?, ?, ?)`,
-      [discordChannelId, telegramChannelId, createdBy]
+      [discordChannelId, telegramChannelId, 1]
     );
   }
 

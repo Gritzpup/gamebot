@@ -382,13 +382,10 @@ export class TelegramAdapter extends PlatformAdapter {
         // Make text validation more forgiving - remove spaces, punctuation, etc.
         const cleanText = text.trim().toUpperCase().replace(/[^A-Z]/g, '');
         
-        // Only log if it could be a Wordle guess (5 letters)
+        // Only check if it could be a Wordle guess (5 letters)
         if (cleanText.length === 5) {
-          logger.info(`[Wordle] Valid 5-letter word detected: ${cleanText} from user ${userId} in channel ${msg.chat.id}`);
-          
           // Find if user has an active Wordle game
           const gameSessionId = await this.findActiveWordleSession(userId, msg.chat.id.toString());
-          logger.info(`[Wordle] Active session lookup for user ${userId}: ${gameSessionId ? `Found (${gameSessionId})` : 'NOT FOUND'}`);
           
           if (gameSessionId) {
             logger.info(`[Wordle] Processing guess "${cleanText}" for session ${gameSessionId}`);
@@ -422,47 +419,9 @@ export class TelegramAdapter extends PlatformAdapter {
             await this.handleInteraction(interaction);
             return;
           } else {
-            // No active Wordle session found - check if user has other games
-            logger.warn(`[Wordle] User ${userId} tried to guess "${cleanText}" but has no active Wordle game`);
-            
-            // Check if user has other active games
-            const redis = (await import('../../services/redis/RedisClient')).RedisClient.getInstance();
-            const stateManager = redis.getStateManager();
-            const playerGames = await stateManager.getPlayerGames(userId);
-            
-            if (playerGames.length > 0) {
-              // User has other games active - get details
-              const otherGames = [];
-              for (const sessionId of playerGames) {
-                const gameState = await stateManager.getGameState(sessionId);
-                if (gameState && !gameState.ended) {
-                  otherGames.push(gameState.gameType);
-                }
-              }
-              
-              if (otherGames.length > 0) {
-                await this.bot.sendMessage(
-                  msg.chat.id, 
-                  `❌ You're currently playing ${otherGames.join(', ')}!\n\n` +
-                  `To play Wordle:\n` +
-                  `1️⃣ Quit current game: /quit\n` +
-                  `2️⃣ Start Wordle: /play wordle\n` +
-                  `3️⃣ Type 5-letter words to guess!`,
-                  { reply_to_message_id: msg.message_id }
-                );
-              } else {
-                // Games exist but all ended - stay silent
-                logger.info(`[Wordle] Player ${userId} typed "${cleanText}" but all games have ended`);
-              }
-            } else {
-              // No games at all - stay silent  
-              logger.info(`[Wordle] Player ${userId} typed "${cleanText}" but has no games`);
-            }
+            // No active Wordle session - silently ignore 5-letter words
             return;
           }
-        } else if (cleanText.length > 0 && cleanText.length < 10 && /^[A-Z]+$/.test(cleanText)) {
-          // User might be trying to play Wordle but word is wrong length
-          logger.debug(`[Wordle] Possible Wordle attempt with wrong length: "${cleanText}" (${cleanText.length} letters)`);
         }
         return;
       }
@@ -561,18 +520,14 @@ export class TelegramAdapter extends PlatformAdapter {
   
   private async findActiveWordleSession(userId: string, channelId: string): Promise<string | null> {
     try {
-      logger.info(`[Wordle] Looking for active Wordle session for user ${userId} in channel ${channelId}`);
-      
       // Get Redis state manager to find active games
       const redis = (await import('../../services/redis/RedisClient')).RedisClient.getInstance();
       const stateManager = redis.getStateManager();
       
       // Get player's active games
       const playerGames = await stateManager.getPlayerGames(userId);
-      logger.info(`[Wordle] Player ${userId} has ${playerGames.length} active games: ${playerGames.join(', ')}`);
       
       if (playerGames.length === 0) {
-        logger.info(`[Wordle] No active games found for player ${userId}`);
         return null;
       }
       
