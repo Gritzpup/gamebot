@@ -53,9 +53,10 @@ export class MemoryMonitor {
     const avgMemory = this.memoryTrend.reduce((a, b) => a + b, 0) / this.memoryTrend.length;
     const memoryGrowthRate = this.calculateGrowthRate();
     
-    logger.debug(`Memory Usage: ${totalMemoryMB.toFixed(2)}MB / ${this.maxMemoryMB}MB (${(totalMemoryMB / this.maxMemoryMB * 100).toFixed(1)}%)`);
-    logger.debug(`Heap Used: ${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB`);
-    logger.debug(`RSS: ${(memUsage.rss / 1024 / 1024).toFixed(2)}MB`);
+    // Only log memory stats when there's an issue
+    // logger.debug(`Memory Usage: ${totalMemoryMB.toFixed(2)}MB / ${this.maxMemoryMB}MB (${(totalMemoryMB / this.maxMemoryMB * 100).toFixed(1)}%)`);
+    // logger.debug(`Heap Used: ${(memUsage.heapUsed / 1024 / 1024).toFixed(2)}MB`);
+    // logger.debug(`RSS: ${(memUsage.rss / 1024 / 1024).toFixed(2)}MB`);
     
     if (totalMemoryMB > this.maxMemoryMB) {
       logger.error(`CRITICAL: Memory usage (${totalMemoryMB.toFixed(2)}MB) exceeds limit (${this.maxMemoryMB}MB)`);
@@ -213,7 +214,8 @@ export class MemoryMonitor {
         if (unit === 'K') memoryMB = value / 1024;
         else if (unit === 'G') memoryMB = value * 1024;
         
-        logger.debug(`Redis Memory: ${value}${unit} (${memoryMB.toFixed(2)}MB)`);
+        // Only log Redis memory when it's high
+        // logger.debug(`Redis Memory: ${value}${unit} (${memoryMB.toFixed(2)}MB)`);
         
         if (memoryMB > 500) {
           logger.warn(`Redis using significant memory: ${memoryMB.toFixed(2)}MB`);
@@ -222,7 +224,8 @@ export class MemoryMonitor {
       }
       
       const keyCount = await redis['client'].dbsize();
-      logger.debug(`Redis Keys: ${keyCount}`);
+      // Only log key count when it's high
+      // logger.debug(`Redis Keys: ${keyCount}`);
       
       if (keyCount > 10000) {
         logger.warn(`High number of Redis keys: ${keyCount}`);

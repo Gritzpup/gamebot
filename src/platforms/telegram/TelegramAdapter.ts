@@ -381,8 +381,8 @@ export class TelegramAdapter extends PlatformAdapter {
         // Check if it's a 5-letter word (potential Wordle guess)
         // Make text validation more forgiving - remove spaces, punctuation, etc.
         const cleanText = text.trim().toUpperCase().replace(/[^A-Z]/g, '');
-        logger.info(`[Wordle] Text input received: "${text}" -> cleaned: "${cleanText}" (length: ${cleanText.length})`);
         
+        // Only log if it could be a Wordle guess (5 letters)
         if (cleanText.length === 5) {
           logger.info(`[Wordle] Valid 5-letter word detected: ${cleanText} from user ${userId} in channel ${msg.chat.id}`);
           

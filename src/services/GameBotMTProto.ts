@@ -23,7 +23,19 @@ export class GameBotMTProto {
       
       this.client = new TelegramClient(session, this.apiId, this.apiHash, {
         connectionRetries: 5,
-        baseLogger: console,
+        // Disable verbose network logging
+        baseLogger: {
+          log: () => {},  // Suppress regular logs
+          error: (msg: string) => {
+            // Only log critical errors
+            if (msg.includes('FLOOD_WAIT') || msg.includes('AUTH_KEY')) {
+              logger.error('MTProto critical:', msg);
+            }
+          },
+          warn: () => {},  // Suppress warnings
+          info: () => {},  // Suppress info
+          debug: () => {},  // Suppress debug
+        } as any,
       });
       
       // Connect as bot

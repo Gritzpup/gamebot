@@ -119,6 +119,18 @@ export class Database {
       );
     `);
     
+    // Channel mappings table for cross-platform relay
+    await this.db!.exec(`
+      CREATE TABLE IF NOT EXISTS channel_mappings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        discord_channel_id TEXT,
+        telegram_channel_id TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    
     logger.info('Database migrations completed');
   }
 
