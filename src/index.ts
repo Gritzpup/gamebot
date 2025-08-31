@@ -5,6 +5,7 @@ import { EnhancedTelegramAdapter } from './platforms/telegram/EnhancedTelegramAd
 import { DiscordAdapter } from './platforms/discord/DiscordAdapter';
 import { Database } from './services/database/Database';
 import { RedisClient } from './services/redis/RedisClient';
+import { MemoryMonitor } from './utils/MemoryMonitor';
 
 // ASCII art banner
 const banner = `
@@ -43,6 +44,12 @@ async function main() {
     const redis = RedisClient.getInstance();
     await redis.connect();
     logger.info('Redis connected successfully');
+    
+    // Start memory monitoring
+    logger.info('Starting memory monitor...');
+    const memoryMonitor = MemoryMonitor.getInstance();
+    memoryMonitor.start();
+    logger.info('Memory monitor started');
     
     // Initialize game engine
     logger.info('Initializing game engine...');
@@ -114,6 +121,9 @@ async function main() {
       logger.info('Shutting down GameBot...');
       
       try {
+        // Stop memory monitor
+        memoryMonitor.stop();
+        
         // Stop game engine
         await gameEngine.stop();
         

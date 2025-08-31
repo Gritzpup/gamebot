@@ -80,7 +80,7 @@ export class RedisClient {
   // Game state management
   async saveGameState(state: CacheGameState): Promise<void> {
     const key = `game:${state.sessionId}`;
-    const ttl = state.ttl || 3600; // 1 hour default
+    const ttl = Math.min(state.ttl || 3600, 7200); // Max 2 hours, default 1 hour
     
     await this.client.setex(
       key,

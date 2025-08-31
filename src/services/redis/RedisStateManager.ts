@@ -91,6 +91,7 @@ export class RedisStateManager {
       const multi = this.client.multi();
       multi.setex(key, 3600, JSON.stringify(data)); // 1 hour TTL
       multi.sadd('sessions:active', sessionId);
+      multi.expire('sessions:active', 86400); // 24 hour TTL for the set
       
       const results = await multi.exec();
       return results !== null && results.every(([err]) => !err);
@@ -153,7 +154,9 @@ export class RedisStateManager {
    * Player-game mapping operations
    */
   async addPlayerGame(playerId: string, sessionId: string): Promise<void> {
-    await this.client.sadd(`player:${playerId}:games`, sessionId);
+    const key = `player:${playerId}:games`;
+    await this.client.sadd(key, sessionId);
+    await this.client.expire(key, 7200); // 2 hour TTL
   }
 
   async removePlayerGame(playerId: string, sessionId: string): Promise<void> {
@@ -172,7 +175,9 @@ export class RedisStateManager {
    * Channel-session mapping operations
    */
   async addChannelSession(channelId: string, sessionId: string): Promise<void> {
-    await this.client.sadd(`channel:${channelId}:sessions`, sessionId);
+    const key = `channel:${channelId}:sessions`;
+    await this.client.sadd(key, sessionId);
+    await this.client.expire(key, 7200); // 2 hour TTL
   }
 
   async removeChannelSession(channelId: string, sessionId: string): Promise<void> {
@@ -188,6 +193,7 @@ export class RedisStateManager {
    */
   async setMessageSession(messageId: string, sessionId: string): Promise<void> {
     await this.client.hset('message:session:map', messageId, sessionId);
+    await this.client.expire('message:session:map', 7200); // 2 hour TTL
   }
 
   async getMessageSession(messageId: string): Promise<string | null> {
@@ -241,6 +247,7 @@ export class RedisStateManager {
     // Store bot move with metadata
     const data = { sessionId, messageId, executeAt };
     await this.client.zadd('scheduled:botmoves', executeAt, JSON.stringify(data));
+    await this.client.expire('scheduled:botmoves', 3600); // 1 hour TTL
   }
 
   async getScheduledBotMoves(maxTimestamp: number): Promise<Array<{sessionId: string, messageId?: string}>> {
